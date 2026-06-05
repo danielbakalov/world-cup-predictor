@@ -5,9 +5,9 @@ Per fixture:
   2. Invert P(total > line) under Poisson(T) to recover the total mean T.
   3. Split T into lam_home / lam_away with the Asian-handicap line; if no
      handicap is quoted, fall back to inverting 1X2 supremacy under Skellam.
-  4. If an Elevenify fixture matches, blend the odds goal-difference with
-     Elevenify's predicted goal difference, re-split T, and apply a clean-sheet
-     Dixon-Coles tilt.
+  4. If an Elevenify fixture matches, blend both the total goals mean and the
+     goal difference with Elevenify's predictions, re-split, and apply a
+     clean-sheet Dixon-Coles tilt.
   5. Build the 0..8 Poisson grid; return the most likely scorelines.
 
 The de-vig / market-inversion core (steps 1-3) is lifted from a prior odds
@@ -24,7 +24,7 @@ from scipy.stats import poisson, skellam
 
 MAX_GOALS = 8
 LAMBDA_FLOOR = 0.15
-ELEVENIFY_WEIGHT = 0.4  # blend: 0.6 odds / 0.4 Elevenify on the goal difference
+ELEVENIFY_WEIGHT = 0.4  # blend: 0.6 odds / 0.4 Elevenify on both total goals and goal difference
 CS_TILT = 0.3  # clean-sheet Dixon-Coles strength
 _T_MIN, _T_MAX = 1e-6, 20.0
 
@@ -183,11 +183,12 @@ def predict(
     blend_applied = False
     home_cs = away_cs = None
     if elevenify and elevenify.get("home_goals") is not None:
-        odds_diff = lam_home - lam_away
-        elev_diff = elevenify["home_goals"] - elevenify["away_goals"]
-        blended = (1 - ELEVENIFY_WEIGHT) * odds_diff + ELEVENIFY_WEIGHT * elev_diff
-        lam_home = max((total_mean + blended) / 2, LAMBDA_FLOOR)
-        lam_away = max((total_mean - blended) / 2, LAMBDA_FLOOR)
+        elev_home = elevenify["home_goals"]
+        elev_away = elevenify["away_goals"]
+        blended_total = (1 - ELEVENIFY_WEIGHT) * total_mean + ELEVENIFY_WEIGHT * (elev_home + elev_away)
+        blended_diff = (1 - ELEVENIFY_WEIGHT) * (lam_home - lam_away) + ELEVENIFY_WEIGHT * (elev_home - elev_away)
+        lam_home = max((blended_total + blended_diff) / 2, LAMBDA_FLOOR)
+        lam_away = max((blended_total - blended_diff) / 2, LAMBDA_FLOOR)
         home_cs, away_cs = elevenify.get("home_cs"), elevenify.get("away_cs")
         blend_applied = True
 
