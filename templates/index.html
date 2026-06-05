@@ -98,7 +98,6 @@
 
 <div class="filters">
   <input type="search" id="search" placeholder="Filter by team…" autocomplete="off" />
-  <label><input type="checkbox" id="elevOnly" /> Elevenify only</label>
   <span class="ts" id="count"></span>
 </div>
 
@@ -158,11 +157,9 @@
 
   function render() {
     const q = document.getElementById("search").value.trim().toLowerCase();
-    const elevOnly = document.getElementById("elevOnly").checked;
     const grid = document.getElementById("grid");
 
     const shown = MATCHES.filter(m => {
-      if (elevOnly && !(m.prediction && m.prediction.blend_applied)) return false;
       if (!q) return true;
       return (m.home_team + " " + m.away_team).toLowerCase().includes(q);
     });
@@ -192,7 +189,6 @@
   }
 
   document.getElementById("search").addEventListener("input", render);
-  document.getElementById("elevOnly").addEventListener("change", render);
   document.getElementById("refresh").addEventListener("click", refresh);
   load();
 </script>
