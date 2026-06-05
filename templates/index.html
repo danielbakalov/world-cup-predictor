@@ -162,7 +162,7 @@
     const grid = document.getElementById("grid");
 
     const shown = MATCHES.filter(m => {
-      if (elevOnly && !m.elevenify_source) return false;
+      if (elevOnly && !(m.prediction && m.prediction.blend_applied)) return false;
       if (!q) return true;
       return (m.home_team + " " + m.away_team).toLowerCase().includes(q);
     });
