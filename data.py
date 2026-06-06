@@ -1,11 +1,9 @@
 """Fetch + cache the two data sources: The Odds API and Elevenify (Datawrapper).
 
-Elevenify note: the real CSV layout is NOT the column-per-fixture shape the brief
-assumed. The match CSV is paired team rows ("Mexico | :mx: | Group A | 1.76 | 48%
-| 62%", then a "v" separator, then the away team), so we parse it with the stdlib
-csv reader rather than pandas (pandas adds no leverage on this irregular layout).
-The upside: it gives each team's *predicted goals* directly, which is a stronger
-blend signal than the brief's (win% - win%) proxy.
+Elevenify CSV layout: paired team rows ("Mexico | :mx: | Group A | 1.76 | 48% | 62%",
+then a "v" separator row, then the away team). Parsed with the stdlib csv module —
+pandas adds no leverage on this irregular layout. Each team row gives predicted goals
+directly, which is a stronger blend signal than a win%-derived proxy.
 """
 
 from __future__ import annotations
@@ -13,8 +11,11 @@ from __future__ import annotations
 import csv
 import difflib
 import io
+import json
 import logging
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 
@@ -29,13 +30,45 @@ ELEVENIFY_MATCH_CSV = "https://static.dwcdn.net/data/8CjZ3.csv"
 ELEVENIFY_TEAM_CSV = "https://static.dwcdn.net/data/wvG0g.csv"
 
 _HTTP_TIMEOUT = 20
+_ODDS_CACHE = Path(__file__).parent / ".odds_cache.json"
+_ELEVENIFY_CACHE = Path(__file__).parent / ".elevenify_cache.json"
+_ELEVENIFY_TTL = 4 * 3600  # seconds; Elevenify updates between rounds, not continuously
+
+_odds_quota: int | None = None
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def odds_fetched_at() -> str | None:
+    """Return the ISO timestamp when odds were last fetched, or None if no cache."""
+    if not _ODDS_CACHE.exists():
+        return None
+    try:
+        return json.loads(_ODDS_CACHE.read_text()).get("fetched_at")
+    except Exception:
+        return None
+
+
+def odds_quota() -> int | None:
+    """Return the most recently observed x-requests-remaining from The Odds API."""
+    return _odds_quota
 
 
 # --------------------------------------------------------------------------- #
 # The Odds API                                                                #
 # --------------------------------------------------------------------------- #
-def fetch_odds() -> list[dict]:
-    """Normalised list of fixtures from The Odds API; sample fixtures on any gap."""
+def fetch_odds(force: bool = False) -> list[dict]:
+    """Return cached odds if available, otherwise fetch from The Odds API.
+
+    Pass force=True to bypass the cache and hit the API.
+    """
+    if not force and _ODDS_CACHE.exists():
+        log.info("Loading odds from cache (%s).", _ODDS_CACHE)
+        cached = json.loads(_ODDS_CACHE.read_text())
+        return cached["events"]
+
     key = os.environ.get("ODDS_API_KEY")
     if not key:
         log.warning("ODDS_API_KEY not set - serving sample fixtures.")
@@ -49,6 +82,11 @@ def fetch_odds() -> list[dict]:
     try:
         r = requests.get(ODDS_BASE, params=params, timeout=_HTTP_TIMEOUT)
         r.raise_for_status()
+        global _odds_quota
+        try:
+            _odds_quota = int(r.headers["x-requests-remaining"])
+        except (KeyError, ValueError):
+            pass
         events = r.json()
     except Exception as exc:  # noqa: BLE001 - any failure -> graceful fallback
         log.error("Odds fetch failed (%s) - serving sample fixtures.", exc)
@@ -57,7 +95,9 @@ def fetch_odds() -> list[dict]:
         log.warning("Odds API returned 0 WC events - serving sample fixtures.")
         return _sample_odds()
     log.info("Fetched %d WC events from The Odds API.", len(events))
-    return [_normalize_event(ev) for ev in events]
+    normalised = [_normalize_event(ev) for ev in events]
+    _ODDS_CACHE.write_text(json.dumps({"fetched_at": _now(), "events": normalised}))
+    return normalised
 
 
 def _collect_market(event: dict, key: str):
@@ -141,8 +181,21 @@ def _num(s: str | None) -> float | None:
         return None
 
 
-def fetch_elevenify() -> list[dict]:
-    """Parse the Elevenify match CSV into per-fixture predictions."""
+def fetch_elevenify(force: bool = False) -> list[dict]:
+    """Parse the Elevenify match CSV into per-fixture predictions.
+
+    Results are cached for _ELEVENIFY_TTL seconds. Pass force=True to bypass.
+    """
+    if not force and _ELEVENIFY_CACHE.exists():
+        try:
+            cached = json.loads(_ELEVENIFY_CACHE.read_text())
+            age = datetime.now(timezone.utc).timestamp() - cached["fetched_at"]
+            if age < _ELEVENIFY_TTL:
+                log.info("Elevenify from cache (%.0f min old).", age / 60)
+                return cached["fixtures"]
+        except Exception:
+            pass
+
     try:
         r = requests.get(ELEVENIFY_MATCH_CSV, timeout=_HTTP_TIMEOUT)
         r.raise_for_status()
@@ -168,6 +221,7 @@ def fetch_elevenify() -> list[dict]:
         teams.append(
             {
                 "team": name,
+                "group": row[2].strip() or None if len(row) > 2 else None,
                 "goals": _num(row[3]) if len(row) > 3 else None,
                 "cs": _pct(row[4]) if len(row) > 4 else None,
                 "win": _pct(row[5]) if len(row) > 5 else None,
@@ -181,6 +235,7 @@ def fetch_elevenify() -> list[dict]:
             {
                 "home_team": h["team"],
                 "away_team": a["team"],
+                "group": h["group"],
                 "home_goals": h["goals"],
                 "away_goals": a["goals"],
                 "home_cs": h["cs"],
@@ -190,6 +245,15 @@ def fetch_elevenify() -> list[dict]:
             }
         )
     log.info("Parsed %d Elevenify fixtures.", len(fixtures))
+
+    try:
+        _ELEVENIFY_CACHE.write_text(json.dumps({
+            "fetched_at": datetime.now(timezone.utc).timestamp(),
+            "fixtures": fixtures,
+        }))
+    except Exception as exc:
+        log.warning("Elevenify cache write failed: %s", exc)
+
     return fixtures
 
 
@@ -259,6 +323,7 @@ def match_elevenify(home: str, away: str, fixtures: list[dict], cutoff: float = 
                 "away_cs": f[f"{a_pref}_cs"],
                 "home_win": f[f"{h_pref}_win"],
                 "away_win": f[f"{a_pref}_win"],
+                "group": f.get("group"),
             }
 
     best: tuple[float, bool, dict] | None = None
@@ -283,4 +348,5 @@ def match_elevenify(home: str, away: str, fixtures: list[dict], cutoff: float = 
         "away_cs": f[f"{a_pref}_cs"],
         "home_win": f[f"{h_pref}_win"],
         "away_win": f[f"{a_pref}_win"],
+        "group": f.get("group"),
     }

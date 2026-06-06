@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -24,11 +23,10 @@ log = logging.getLogger("wc.app")
 TEMPLATES = Path(__file__).parent / "templates"
 _state: dict = {"matches": [], "updated_at": None}
 
-
-def _compute() -> list[dict]:
+def _compute(force: bool = False) -> list[dict]:
     """Fetch both sources, run the model per fixture, cache the result."""
-    odds = data.fetch_odds()
-    elevenify = data.fetch_elevenify()
+    odds = data.fetch_odds(force=force)
+    elevenify = data.fetch_elevenify(force=force)
     matches: list[dict] = []
 
     for ev in odds:
@@ -41,6 +39,7 @@ def _compute() -> list[dict]:
             "home_team": ev["home_team"],
             "away_team": ev["away_team"],
             "commence_time": ev["commence_time"],
+            "group": elev.get("group") if elev else None,
             "odds_source": {
                 "h2h": ev["h2h"],
                 "totals": ev["totals"],
@@ -54,6 +53,7 @@ def _compute() -> list[dict]:
                     "away_cs_pct": elev["away_cs"],
                     "home_goals": elev["home_goals"],
                     "away_goals": elev["away_goals"],
+                    "group": elev.get("group"),
                 }
                 if elev
                 else None
@@ -74,6 +74,7 @@ def _compute() -> list[dict]:
                     "lambda_home": pred.lambda_home,
                     "lambda_away": pred.lambda_away,
                     "blend_applied": pred.blend_applied,
+                    "outcomes": vars(pred.outcomes),
                 }
             except Exception as exc:  # noqa: BLE001 - one bad fixture shouldn't 500 the board
                 log.error(
@@ -86,7 +87,7 @@ def _compute() -> list[dict]:
         matches.append(match)
 
     _state["matches"] = matches
-    _state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _state["updated_at"] = data.odds_fetched_at()
     log.info("Computed %d matches.", len(matches))
     return matches
 
@@ -102,16 +103,21 @@ app = FastAPI(title="WC26 Scoreline Predictor", lifespan=lifespan)
 
 @app.get("/api/matches")
 def api_matches():
-    return {"updated_at": _state["updated_at"], "matches": _state["matches"]}
+    return {
+        "updated_at": _state["updated_at"],
+        "matches": _state["matches"],
+        "odds_quota": data.odds_quota(),
+    }
 
 
 @app.get("/api/refresh")
 def api_refresh():
-    _compute()
+    _compute(force=True)
     return {
         "status": "ok",
         "matches_count": len(_state["matches"]),
         "timestamp": _state["updated_at"],
+        "odds_quota": data.odds_quota(),
     }
 
 

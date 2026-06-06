@@ -33,7 +33,24 @@ immediately (those CSVs are already live for all 48 teams).
    predicted goals per team — a stronger signal than a win%-derived proxy.)*
 5. **Grid**: build `P(home=i, away=j)` for 0–8, return the most likely scorelines.
 
-Knobs live at the top of `model.py` (`ELEVENIFY_WEIGHT`, `CS_TILT`, `MAX_GOALS`).
+Knobs live at the top of `model.py` (`ELEVENIFY_WEIGHT`, `DC_RHO`, `MAX_GOALS`).
+
+## Champion goals bonus (`champion_goals.py`)
+
+Standalone script for the pool bonus question: *total goals scored by the
+championship team, closest without going over.*
+
+```bash
+python champion_goals.py
+```
+
+Pulls outright winner odds, de-vigs them into win probabilities, then weights
+each team's expected goal output against historical WC winner distributions
+(1986–2022, all 7-game tournaments). Outputs a distribution and a recommended
+bid at the **40th percentile** (~60% chance the actual exceeds your bid).
+
+The main variable is `TEAM_STYLE` at the top of the script — verify style
+classifications for any team before bidding.
 
 ## API
 
@@ -46,20 +63,10 @@ Knobs live at the top of `model.py` (`ELEVENIFY_WEIGHT`, `CS_TILT`, `MAX_GOALS`)
 ## Files
 
 ```
-app.py            FastAPI app + per-fixture orchestration
-model.py          De-vig, market inversion, blend, Poisson grid
-data.py           Odds + Elevenify fetching, caching, fuzzy fixture matching
+app.py                FastAPI app + per-fixture orchestration
+model.py              De-vig, market inversion, blend, Poisson grid
+data.py               Odds + Elevenify fetching, caching, fuzzy fixture matching
+champion_goals.py     Standalone champion goals bid estimator
 templates/
-  index.html      Dark dashboard (vanilla JS, no build step)
+  index.html          Dark dashboard (vanilla JS, no build step)
 ```
-
-## Notes & deviations from the original brief
-
-- **Odds host:** uses `the-odds-api.com` (the brief's host string was a typo for
-  it). The handicap market key there is `spreads`, not `asian_handicap`.
-- **Elevenify parsing:** the real Datawrapper CSV is a paired-team-row layout,
-  not the column-per-fixture shape the brief assumed — parsed with the stdlib
-  `csv` module (pandas added nothing here, so it's not a dependency).
-- **Fuzzy team matching** uses `difflib`; unmatched fixtures are logged
-  (`No Elevenify match for X vs Y`) so you can add aliases.
-- **`ODDS_API_KEY` is read from the environment only** — never hardcoded.

@@ -9,9 +9,6 @@ Per fixture:
      goal difference with Elevenify's predictions, re-split, and apply a
      clean-sheet Dixon-Coles tilt.
   5. Build the 0..8 Poisson grid; return the most likely scorelines.
-
-The de-vig / market-inversion core (steps 1-3) is lifted from a prior odds
-project and is provider-agnostic: it only needs decimal odds.
 """
 
 from __future__ import annotations
@@ -25,12 +22,12 @@ from scipy.stats import poisson, skellam
 MAX_GOALS = 8
 LAMBDA_FLOOR = 0.15
 ELEVENIFY_WEIGHT = 0.4  # blend: 0.6 odds / 0.4 Elevenify on both total goals and goal difference
-CS_TILT = 0.3  # clean-sheet Dixon-Coles strength
+DC_RHO = 0.1  # Dixon-Coles rho magnitude; applied as negative (inflates 0-0 and 1-1, deflates 1-0 and 0-1)
 _T_MIN, _T_MAX = 1e-6, 20.0
 
 
 # --------------------------------------------------------------------------- #
-# De-vig + market inversion (salvaged, provider-agnostic)                      #
+# De-vig + market inversion                                                    #
 # --------------------------------------------------------------------------- #
 def implied_prob(decimal_odds: float) -> float:
     """Raw (vig-inclusive) implied probability from decimal odds."""
@@ -93,11 +90,21 @@ class Scoreline:
 
 
 @dataclass
+class OutcomeProbs:
+    home: float          # percent, 1dp
+    draw: float
+    away: float
+    optimal_pick: str    # "Home" | "Draw" | "Away"
+    expected_points: float  # under 1pt-win / 2pt-draw scoring rule
+
+
+@dataclass
 class Prediction:
     lambda_home: float
     lambda_away: float
     blend_applied: bool
     top_scorelines: list[Scoreline]
+    outcomes: OutcomeProbs
 
 
 def split_lambda(
@@ -126,6 +133,20 @@ def _outcome(i: int, j: int) -> str:
     return "Home Win" if i > j else "Away Win" if j > i else "Draw"
 
 
+def _dc_tau(i: int, j: int, lam_h: float, lam_a: float) -> float:
+    """Dixon-Coles correction factor for the four correlated low-score cells."""
+    rho = -DC_RHO
+    if i == 0 and j == 0:
+        return 1 - rho * lam_h * lam_a
+    if i == 1 and j == 0:
+        return 1 + rho * lam_a
+    if i == 0 and j == 1:
+        return 1 + rho * lam_h
+    if i == 1 and j == 1:
+        return 1 - rho
+    return 1.0
+
+
 def poisson_grid(
     lam_home: float,
     lam_away: float,
@@ -133,22 +154,37 @@ def poisson_grid(
     home_cs: float | None = None,
     away_cs: float | None = None,
 ) -> list[list[float]]:
-    """P(home=i, away=j) for i,j in 0..MAX_GOALS, with optional clean-sheet tilt.
+    """P(home=i, away=j) for i,j in 0..MAX_GOALS, with Dixon-Coles low-score correction.
 
-    A strong home clean-sheet rate lifts the away=0 column; a strong away CS
-    rate lifts the home=0 row (Dixon-Coles-style). Grid is renormalised after.
+    When Elevenify CS data is present, applies DC tau to the four correlated
+    low-score cells only: (0,0), (1,0), (0,1), (1,1). Inflates 0-0 and 1-1
+    draws; deflates 1-0 and 0-1. Grid is renormalised after.
     """
     hp = [poisson.pmf(i, lam_home) for i in range(MAX_GOALS + 1)]
     ap = [poisson.pmf(j, lam_away) for j in range(MAX_GOALS + 1)]
     grid = [[hp[i] * ap[j] for j in range(MAX_GOALS + 1)] for i in range(MAX_GOALS + 1)]
-    if home_cs:  # P(away = 0): every cell with j == 0
-        for i in range(MAX_GOALS + 1):
-            grid[i][0] *= 1.0 + home_cs * CS_TILT
-    if away_cs:  # P(home = 0): every cell with i == 0
-        for j in range(MAX_GOALS + 1):
-            grid[0][j] *= 1.0 + away_cs * CS_TILT
+    if home_cs or away_cs:
+        for i in range(2):
+            for j in range(2):
+                grid[i][j] *= _dc_tau(i, j, lam_home, lam_away)
     total = sum(sum(row) for row in grid)
     return [[c / total for c in row] for row in grid]
+
+
+def _outcome_probs(grid: list[list[float]]) -> OutcomeProbs:
+    n = len(grid)
+    p_home = float(sum(grid[i][j] for i in range(n) for j in range(n) if i > j))
+    p_draw = float(sum(grid[i][i] for i in range(n)))
+    p_away = float(sum(grid[i][j] for i in range(n) for j in range(n) if j > i))
+    choices = {"Home": p_home, "Draw": 2.0 * p_draw, "Away": p_away}
+    pick = max(choices, key=choices.get)
+    return OutcomeProbs(
+        home=round(p_home * 100, 1),
+        draw=round(p_draw * 100, 1),
+        away=round(p_away * 100, 1),
+        optimal_pick=pick,
+        expected_points=round(choices[pick], 3),
+    )
 
 
 def top_scorelines(grid: list[list[float]], n: int = 10) -> list[Scoreline]:
@@ -198,4 +234,5 @@ def predict(
         lambda_away=round(lam_away, 3),
         blend_applied=blend_applied,
         top_scorelines=top_scorelines(grid),
+        outcomes=_outcome_probs(grid),
     )

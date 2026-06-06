@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>WC26 Scoreline Predictor</title>
+<title>WC26 Predictor</title>
 <style>
   :root {
     --bg: #0c0e12;
@@ -16,6 +16,11 @@
     --accent-dim: #1f3a30;
     --grey: #3a4150;
     --bar: #2a64ff;
+    --bar-dim: #0f1a30;
+    --gold: #c9a227;
+    --gold-dim: #2a200a;
+    --red: #e57373;
+    --red-dim: #2a1010;
   }
   * { box-sizing: border-box; }
   body {
@@ -33,26 +38,42 @@
   header h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: .2px; }
   header .ts { color: var(--muted); font-size: 12px; }
   header .spacer { flex: 1; }
+  header .quota { font-size: 12px; color: var(--muted); }
+  header .quota.warn { color: var(--gold); }
+  header .quota.low { color: var(--red); }
   button {
     background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
   }
   button:hover { border-color: var(--accent); }
   button.refresh { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+
+  /* Filters */
   .filters {
-    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
     padding: 14px 24px; border-bottom: 1px solid var(--line);
   }
   .filters input[type=search] {
     background: var(--panel); border: 1px solid var(--line); color: var(--text);
-    padding: 8px 12px; border-radius: 8px; min-width: 240px; font-size: 13px;
+    padding: 8px 12px; border-radius: 8px; min-width: 220px; font-size: 13px;
   }
-  .filters label { color: var(--muted); display: flex; align-items: center; gap: 7px; cursor: pointer; }
+  .filters .sep { color: var(--line); }
+  .pill {
+    padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--muted); cursor: pointer; font-size: 12px;
+  }
+  .pill:hover { border-color: var(--muted); color: var(--text); }
+  .pill.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+  .filters .count { color: var(--muted); font-size: 12px; margin-left: 4px; }
+
+  /* Grid */
   .grid {
     display: grid; grid-template-columns: repeat(2, 1fr);
     gap: 14px; padding: 20px 24px; max-width: 1100px; margin: 0 auto;
   }
   @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+
+  /* Card */
   .card {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 12px; padding: 16px;
@@ -60,85 +81,175 @@
   .card .top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
   .card .teams { font-size: 15px; font-weight: 620; }
   .card .ko { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+  /* Source badge */
   .badge {
     display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
     margin-top: 8px; border: 1px solid transparent;
   }
   .badge.blend { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
   .badge.odds { background: var(--panel-2); color: var(--muted); border-color: var(--grey); }
-  .scorelist { margin: 14px 0 8px; display: flex; flex-direction: column; gap: 6px; }
-  .score-row { display: grid; grid-template-columns: 42px 1fr 52px; align-items: center; gap: 10px; }
-  .score-row .s { font-variant-numeric: tabular-nums; font-weight: 600; }
-  .score-row .p { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; }
+
+  /* Model pick badge */
+  .pick-row { margin: 12px 0 10px; }
+  .pick-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border-radius: 7px; font-size: 13px; font-weight: 650; border: 1px solid;
+    letter-spacing: .1px;
+  }
+  .pick-badge.home { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+  .pick-badge.draw { background: var(--gold-dim); color: var(--gold); border-color: var(--gold); }
+  .pick-badge.away { background: var(--bar-dim); color: var(--bar); border-color: var(--bar); }
+  .pick-badge .xp { font-weight: 400; opacity: .8; font-size: 12px; }
+
+  /* Outcome probability bars */
+  .outcome-section { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .oc-row { display: grid; grid-template-columns: 48px 1fr 40px; align-items: center; gap: 9px; }
+  .oc-row .ol { font-size: 11px; color: var(--muted); letter-spacing: .3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .oc-row .op { font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); }
+  .oc-row.optimal .ol { color: var(--text); font-weight: 650; }
+  .oc-row.optimal .op { color: var(--text); font-weight: 650; }
+  .oc-row.home-r .bar > span { background: var(--accent); }
+  .oc-row.draw-r .bar > span { background: var(--gold); }
+  .oc-row.away-r .bar > span { background: var(--bar); }
+
+  /* Shared bar */
   .bar { height: 8px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
-  .bar > span { display: block; height: 100%; background: var(--bar); border-radius: 999px; }
-  .score-row.win .bar > span { background: var(--accent); }
-  .score-row.draw .bar > span { background: #c9a227; }
-  .foot { color: var(--muted); font-size: 12px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .bar > span { display: block; height: 100%; border-radius: 999px; }
+
+  /* xG footer */
+  .foot { color: var(--muted); font-size: 12px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  /* Expandable sections */
   .expand { margin-top: 10px; }
   .expand summary { color: var(--muted); cursor: pointer; font-size: 12px; list-style: none; }
   .expand summary::-webkit-details-marker { display: none; }
   .expand summary::before { content: "▸ "; }
   .expand[open] summary::before { content: "▾ "; }
+
+  /* Scoreline list inside expand */
+  .scorelist { margin: 10px 0 4px; display: flex; flex-direction: column; gap: 5px; }
+  .score-row { display: grid; grid-template-columns: 42px 1fr 52px; align-items: center; gap: 10px; }
+  .score-row .s { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 13px; }
+  .score-row .p { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; }
+  .score-row.win .bar > span { background: var(--accent); }
+  .score-row.draw .bar > span { background: var(--gold); }
+
   .expand pre {
     margin: 8px 0 0; background: var(--panel-2); border: 1px solid var(--line);
     border-radius: 8px; padding: 10px; font-size: 11px; color: var(--muted);
     overflow-x: auto; white-space: pre-wrap;
   }
+
   .empty { color: var(--muted); padding: 40px 24px; text-align: center; }
 </style>
 </head>
 <body>
 <header>
-  <h1>⚽ WC26 Scoreline Predictor</h1>
+  <h1>⚽ WC26 Predictor</h1>
   <span class="ts" id="ts">loading…</span>
   <div class="spacer"></div>
+  <span class="quota" id="quota"></span>
   <button class="refresh" id="refresh">↻ Refresh</button>
 </header>
 
 <div class="filters">
   <input type="search" id="search" placeholder="Filter by team…" autocomplete="off" />
-  <span class="ts" id="count"></span>
+  <span class="sep">|</span>
+  <div id="group-pills" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+  <span class="count" id="count"></span>
 </div>
 
 <div class="grid" id="grid"></div>
 
 <script>
   let MATCHES = [];
+  let ACTIVE_GROUP = "all";
 
   const fmtKO = (iso) => {
     if (!iso) return "TBD";
-    try { return new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }); }
-    catch { return iso; }
+    try {
+      return new Date(iso).toLocaleString([], {
+        month: "short", day: "numeric", weekday: "short",
+        hour: "2-digit", minute: "2-digit"
+      });
+    } catch { return iso; }
   };
-  const outClass = (o) => o === "Home Win" || o === "Away Win" ? "win" : "draw";
-  const esc = (s) => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
+  const outClass = (o) => o === "Home Win" || o === "Away Win" ? "win" : "draw";
+  const esc = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+  // ── Quota display ──────────────────────────────────────────────────
+  function updateQuota(quota) {
+    const el = document.getElementById("quota");
+    if (quota === null || quota === undefined || quota < 0) { el.textContent = ""; return; }
+    el.textContent = `${quota} API calls left`;
+    el.className = "quota" + (quota < 50 ? " low" : quota < 150 ? " warn" : "");
+  }
+
+  // ── Model pick section ─────────────────────────────────────────────
+  function modelPickSection(pred, homeTeam, awayTeam) {
+    const o = pred.outcomes;
+    const optLow = o.optimal_pick.toLowerCase();
+    const maxPct = Math.max(o.home, o.draw, o.away, 0.001);
+
+    const rows = [
+      { key: "home", label: "Home", pct: o.home },
+      { key: "draw", label: "Draw", pct: o.draw },
+      { key: "away", label: "Away", pct: o.away },
+    ].map(r => {
+      const isOpt = r.key === optLow;
+      return `
+        <div class="oc-row ${r.key}-r${isOpt ? " optimal" : ""}">
+          <span class="ol">${esc(r.label)}</span>
+          <span class="bar"><span style="width:${(r.pct / maxPct * 100).toFixed(1)}%"></span></span>
+          <span class="op">${r.pct.toFixed(1)}%</span>
+        </div>`;
+    }).join("");
+
+    const pickLabel = optLow === "home" ? esc(homeTeam)
+      : optLow === "away" ? esc(awayTeam)
+      : "Draw";
+
+    return `
+      <div class="pick-row">
+        <span class="pick-badge ${optLow}">Pick: ${pickLabel} <span class="xp">· ${o.expected_points.toFixed(2)} exp pts</span></span>
+      </div>
+      <div class="outcome-section">${rows}</div>`;
+  }
+
+  // ── Card ───────────────────────────────────────────────────────────
   function cardHTML(m) {
-    const blended = m.prediction && m.prediction.blend_applied;
-    const badge = blended
-      ? `<span class="badge blend">Elevenify blend applied</span>`
-      : `<span class="badge odds">Odds only</span>`;
+    const badge = m.prediction && !m.prediction.blend_applied
+      ? `<span class="badge odds">Odds only</span>`
+      : ``;
 
     let body = `<div class="empty" style="padding:12px">No 1X2 + totals market — can't model.</div>`;
     if (m.prediction) {
-      const top5 = m.prediction.top_scorelines.slice(0, 5);
-      const max = Math.max(...top5.map(s => s.probability), 0.0001);
-      const rows = top5.map(s => `
+      const pred = m.prediction;
+
+      const modelPick = modelPickSection(pred, m.home_team, m.away_team);
+      const foot = `<div class="foot">xG&nbsp; ${pred.lambda_home} ${esc(m.home_team)} | ${pred.lambda_away} ${esc(m.away_team)}</div>`;
+
+      const top5 = pred.top_scorelines.slice(0, 5);
+      const maxP = Math.max(...top5.map(s => s.probability), 0.0001);
+      const scoreRows = top5.map(s => `
         <div class="score-row ${outClass(s.outcome)}">
           <span class="s">${s.score}</span>
-          <span class="bar"><span style="width:${(s.probability / max * 100).toFixed(1)}%"></span></span>
+          <span class="bar"><span style="width:${(s.probability / maxP * 100).toFixed(1)}%"></span></span>
           <span class="p">${s.probability.toFixed(1)}%</span>
         </div>`).join("");
+
       body = `
-        <div class="scorelist">${rows}</div>
-        <div class="foot">xG&nbsp; ${m.prediction.lambda_home} ${esc(m.home_team)} | ${m.prediction.lambda_away} ${esc(m.away_team)}</div>`;
+        ${modelPick}
+        ${foot}
+        <details class="expand">
+          <summary>top scorelines</summary>
+          <div class="scorelist">${scoreRows}</div>
+        </details>`;
     }
 
-    const raw = {
-      odds: m.odds_source,
-      elevenify: m.elevenify_source,
-    };
+    const raw = { odds: m.odds_source, elevenify: m.elevenify_source };
 
     return `
       <div class="card">
@@ -155,14 +266,41 @@
       </div>`;
   }
 
+  // ── Group pills ────────────────────────────────────────────────────
+  function renderGroupPills() {
+    const groups = new Set();
+    MATCHES.forEach(m => { if (m.group) groups.add(m.group); });
+    const sorted = Array.from(groups).sort();
+    const pillsEl = document.getElementById("group-pills");
+    pillsEl.innerHTML = ["all", ...sorted].map(g => {
+      const label = g === "all" ? "All" : g;
+      return `<button class="pill${ACTIVE_GROUP === g ? " active" : ""}" onclick='setGroup(${JSON.stringify(g)})'>${esc(label)}</button>`;
+    }).join("");
+  }
+
+  function setGroup(g) {
+    ACTIVE_GROUP = g;
+    render();
+  }
+
+  // ── Main render ────────────────────────────────────────────────────
   function render() {
     const q = document.getElementById("search").value.trim().toLowerCase();
     const grid = document.getElementById("grid");
 
-    const shown = MATCHES.filter(m => {
-      if (!q) return true;
-      return (m.home_team + " " + m.away_team).toLowerCase().includes(q);
-    });
+    renderGroupPills();
+
+    const shown = MATCHES
+      .filter(m => {
+        if (q && !(m.home_team + " " + m.away_team).toLowerCase().includes(q)) return false;
+        if (ACTIVE_GROUP !== "all" && m.group !== ACTIVE_GROUP) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        if (!a.commence_time) return 1;
+        if (!b.commence_time) return -1;
+        return new Date(a.commence_time) - new Date(b.commence_time);
+      });
 
     document.getElementById("count").textContent =
       `${shown.length} of ${MATCHES.length} matches`;
@@ -171,10 +309,12 @@
       : `<div class="empty">No matches.</div>`;
   }
 
+  // ── Load ───────────────────────────────────────────────────────────
   async function load() {
     const r = await fetch("/api/matches");
     const data = await r.json();
     MATCHES = data.matches || [];
+    updateQuota(data.odds_quota);
     document.getElementById("ts").textContent = data.updated_at
       ? "updated " + new Date(data.updated_at).toLocaleString()
       : "";
@@ -184,12 +324,19 @@
   async function refresh() {
     const btn = document.getElementById("refresh");
     btn.disabled = true; btn.textContent = "↻ refreshing…";
-    try { await fetch("/api/refresh"); await load(); }
-    finally { btn.disabled = false; btn.textContent = "↻ Refresh"; }
+    try {
+      const r = await fetch("/api/refresh");
+      const data = await r.json();
+      updateQuota(data.odds_quota);
+      await load();
+    } finally {
+      btn.disabled = false; btn.textContent = "↻ Refresh";
+    }
   }
 
   document.getElementById("search").addEventListener("input", render);
   document.getElementById("refresh").addEventListener("click", refresh);
+
   load();
 </script>
 </body>

@@ -2,3 +2,7 @@
 .env
 __pycache__/
 *.pyc
+.odds_cache.json
+.elevenify_cache.json
+picks.json
+.envrc
