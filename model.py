@@ -21,7 +21,7 @@ from scipy.stats import poisson, skellam
 
 MAX_GOALS = 8
 LAMBDA_FLOOR = 0.15
-ELEVENIFY_WEIGHT = 0.4  # blend: 0.6 odds / 0.4 Elevenify on both total goals and goal difference
+ELEVENIFY_WEIGHT = 0.2  # blend: 0.8 odds / 0.2 Elevenify on both total goals and goal difference
 DC_RHO = 0.1  # Dixon-Coles rho magnitude; applied as negative (inflates 0-0 and 1-1, deflates 1-0 and 0-1)
 _T_MIN, _T_MAX = 1e-6, 20.0
 

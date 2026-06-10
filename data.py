@@ -73,11 +73,14 @@ def fetch_odds(force: bool = False) -> list[dict]:
     if not key:
         log.warning("ODDS_API_KEY not set - serving sample fixtures.")
         return _sample_odds()
+    # Pinnacle is the sharpest book (no-vig, limits winners); betfair_ex_eu is the
+    # exchange-derived market. Both are far more efficient than soft EU retail books.
     params = {
         "apiKey": key,
         "regions": "eu",
         "markets": "h2h,totals,spreads",  # 'spreads' is The Odds API's handicap key
         "oddsFormat": "decimal",
+        "bookmakers": "pinnacle,betfair_ex_eu",
     }
     try:
         r = requests.get(ODDS_BASE, params=params, timeout=_HTTP_TIMEOUT)
@@ -100,9 +103,16 @@ def fetch_odds(force: bool = False) -> list[dict]:
     return normalised
 
 
+_BOOKMAKER_PRIORITY = {"pinnacle": 0, "betfair_ex_eu": 1}
+
+
 def _collect_market(event: dict, key: str):
-    """Yield every outcomes-list for `key` across all bookmakers."""
-    for bk in event.get("bookmakers", []):
+    """Yield outcomes-lists for `key`, Pinnacle first then Betfair."""
+    bookmakers = sorted(
+        event.get("bookmakers", []),
+        key=lambda bk: _BOOKMAKER_PRIORITY.get(bk.get("key", ""), 99),
+    )
+    for bk in bookmakers:
         for m in bk.get("markets", []):
             if m.get("key") == key:
                 yield m["outcomes"]
