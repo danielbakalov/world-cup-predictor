@@ -37,6 +37,7 @@
   }
   header h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: .2px; }
   header .ts { color: var(--muted); font-size: 12px; }
+  header .pts { color: var(--accent); font-size: 13px; font-weight: 600; }
   header .spacer { flex: 1; }
   header .quota { font-size: 12px; color: var(--muted); }
   header .quota.warn { color: var(--gold); }
@@ -91,7 +92,7 @@
   .badge.odds { background: var(--panel-2); color: var(--muted); border-color: var(--grey); }
 
   /* Model pick badge */
-  .pick-row { margin: 12px 0 10px; }
+  .pick-row { margin: 12px 0 10px; display: flex; align-items: center; gap: 8px; }
   .pick-badge {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 5px 11px; border-radius: 7px; font-size: 13px; font-weight: 650; border: 1px solid;
@@ -142,12 +143,64 @@
   }
 
   .empty { color: var(--muted); padding: 40px 24px; text-align: center; }
+
+  /* ── Results section ───────────────────────────────────────────────── */
+  .results-section {
+    border-top: 1px solid var(--line);
+    padding-top: 4px;
+    margin-top: 8px;
+  }
+  .results-header {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 16px 24px 4px; max-width: 1100px; margin: 0 auto;
+  }
+  .results-header h2 {
+    font-size: 14px; font-weight: 650; margin: 0; color: var(--muted);
+    letter-spacing: .4px; text-transform: uppercase;
+  }
+  .results-header .pts-total {
+    font-size: 13px; color: var(--accent); font-weight: 600;
+  }
+
+  /* Result card score display */
+  .result-score {
+    display: flex; align-items: center; justify-content: center;
+    gap: 16px; margin: 14px 0 10px;
+  }
+  .result-score .team-name {
+    font-size: 12px; color: var(--muted); text-align: center;
+    max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .result-score .score-val {
+    font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums;
+    letter-spacing: -1px; color: var(--text); white-space: nowrap;
+  }
+  .result-score .score-sep { font-size: 20px; color: var(--grey); margin: 0 2px; }
+
+  /* Points chip */
+  .pts-chip {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 36px; padding: 3px 8px; border-radius: 6px; font-size: 13px;
+    font-weight: 700; border: 1px solid; letter-spacing: .2px;
+  }
+  .pts-chip.gold { background: var(--gold-dim); color: var(--gold); border-color: var(--gold); }
+  .pts-chip.green { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+  .pts-chip.red { background: var(--red-dim); color: var(--red); border-color: var(--red); }
+  .pts-chip.grey { background: var(--panel-2); color: var(--muted); border-color: var(--grey); }
+
+  /* Actual outcome label */
+  .result-outcome {
+    font-size: 12px; color: var(--muted); margin-top: 4px;
+  }
+  .result-outcome.correct { color: var(--accent); }
+  .result-outcome.wrong { color: var(--red); }
 </style>
 </head>
 <body>
 <header>
   <h1>⚽ WC26 Predictor</h1>
   <span class="ts" id="ts">loading…</span>
+  <span class="pts" id="pts" style="display:none">— <span id="pts-val">0</span> pts</span>
   <div class="spacer"></div>
   <span class="quota" id="quota"></span>
   <button class="refresh" id="refresh">↻ Refresh</button>
@@ -162,8 +215,17 @@
 
 <div class="grid" id="grid"></div>
 
+<section class="results-section" id="results-section" style="display:none">
+  <div class="results-header">
+    <h2>Results</h2>
+    <span class="pts-total" id="pts-total"></span>
+  </div>
+  <div class="grid" id="results-grid"></div>
+</section>
+
 <script>
   let MATCHES = [];
+  let COMPLETED = [];
   let ACTIVE_GROUP = "all";
 
   const fmtKO = (iso) => {
@@ -187,7 +249,7 @@
     el.className = "quota" + (quota < 50 ? " low" : quota < 150 ? " warn" : "");
   }
 
-  // ── Model pick section ─────────────────────────────────────────────
+  // ── Model pick section (upcoming cards) ───────────────────────────
   function modelPickSection(pred, homeTeam, awayTeam) {
     const o = pred.outcomes;
     const optLow = o.optimal_pick.toLowerCase();
@@ -218,7 +280,7 @@
       <div class="outcome-section">${rows}</div>`;
   }
 
-  // ── Card ───────────────────────────────────────────────────────────
+  // ── Upcoming card ──────────────────────────────────────────────────
   function cardHTML(m) {
     const badge = m.prediction && !m.prediction.blend_applied
       ? `<span class="badge odds">Odds only</span>`
@@ -266,10 +328,104 @@
       </div>`;
   }
 
+  // ── Result card (completed matches) ───────────────────────────────
+  function resultCardHTML(m) {
+    // Score display
+    const scoreHTML = `
+      <div class="result-score">
+        <span class="team-name">${esc(m.home_team)}</span>
+        <span class="score-val">${m.home_score ?? "?"} <span class="score-sep">–</span> ${m.away_score ?? "?"}</span>
+        <span class="team-name">${esc(m.away_team)}</span>
+      </div>`;
+
+    // Points chip
+    let chipHTML = `<span class="pts-chip grey">—</span>`;
+    if (m.points_earned === 2) chipHTML = `<span class="pts-chip gold">+2</span>`;
+    else if (m.points_earned === 1) chipHTML = `<span class="pts-chip green">+1</span>`;
+    else if (m.points_earned === 0) chipHTML = `<span class="pts-chip red">✗</span>`;
+
+    // Pick + actual outcome row
+    let pickActualHTML = "";
+    if (m.prediction) {
+      const o = m.prediction.outcomes;
+      const optLow = o.optimal_pick.toLowerCase();
+      const pickLabel = optLow === "home" ? esc(m.home_team)
+        : optLow === "away" ? esc(m.away_team)
+        : "Draw";
+
+      const actualLabel = m.actual_outcome === "home" ? esc(m.home_team) + " Win"
+        : m.actual_outcome === "away" ? esc(m.away_team) + " Win"
+        : m.actual_outcome === "draw" ? "Draw"
+        : "—";
+
+      const correct = m.points_earned !== null && m.points_earned > 0;
+      const outcomeClass = m.points_earned === null ? "" : correct ? "correct" : "wrong";
+      const mark = m.points_earned === null ? "" : correct ? " ✓" : " ✗";
+
+      pickActualHTML = `
+        <div class="pick-row">
+          <span class="pick-badge ${optLow}">Pick: ${pickLabel} <span class="xp">· ${o.expected_points.toFixed(2)} exp pts</span></span>
+          ${chipHTML}
+        </div>
+        <div class="result-outcome ${outcomeClass}">Actual: ${actualLabel}${mark}</div>`;
+    } else {
+      pickActualHTML = `
+        <div class="pick-row">${chipHTML}</div>
+        <div class="result-outcome">No prediction stored</div>`;
+    }
+
+    // Collapsible model detail (probability bars + scorelines)
+    let modelDetail = "";
+    if (m.prediction) {
+      const pred = m.prediction;
+      const o = pred.outcomes;
+      const optLow = o.optimal_pick.toLowerCase();
+      const maxPct = Math.max(o.home, o.draw, o.away, 0.001);
+      const bars = [
+        { key: "home", label: "Home", pct: o.home },
+        { key: "draw", label: "Draw", pct: o.draw },
+        { key: "away", label: "Away", pct: o.away },
+      ].map(r => `
+        <div class="oc-row ${r.key}-r${r.key === optLow ? " optimal" : ""}">
+          <span class="ol">${r.label}</span>
+          <span class="bar"><span style="width:${(r.pct / maxPct * 100).toFixed(1)}%"></span></span>
+          <span class="op">${r.pct.toFixed(1)}%</span>
+        </div>`).join("");
+
+      const top5 = pred.top_scorelines.slice(0, 5);
+      const maxP = Math.max(...top5.map(s => s.probability), 0.0001);
+      const scoreRows = top5.map(s => `
+        <div class="score-row ${outClass(s.outcome)}">
+          <span class="s">${s.score}</span>
+          <span class="bar"><span style="width:${(s.probability / maxP * 100).toFixed(1)}%"></span></span>
+          <span class="p">${s.probability.toFixed(1)}%</span>
+        </div>`).join("");
+
+      modelDetail = `
+        <details class="expand">
+          <summary>pre-match model</summary>
+          <div class="outcome-section" style="margin-top:8px">${bars}</div>
+          <div class="foot">xG&nbsp; ${pred.lambda_home} ${esc(m.home_team)} | ${pred.lambda_away} ${esc(m.away_team)}</div>
+          <div class="scorelist" style="margin-top:8px">${scoreRows}</div>
+        </details>`;
+    }
+
+    return `
+      <div class="card">
+        <div class="top">
+          <span class="teams">${esc(m.home_team)} <span style="color:var(--muted)">vs</span> ${esc(m.away_team)}</span>
+          <span class="ko">${fmtKO(m.commence_time)}</span>
+        </div>
+        ${scoreHTML}
+        ${pickActualHTML}
+        ${modelDetail}
+      </div>`;
+  }
+
   // ── Group pills ────────────────────────────────────────────────────
   function renderGroupPills() {
     const groups = new Set();
-    MATCHES.forEach(m => { if (m.group) groups.add(m.group); });
+    [...MATCHES, ...COMPLETED].forEach(m => { if (m.group) groups.add(m.group); });
     const sorted = Array.from(groups).sort();
     const pillsEl = document.getElementById("group-pills");
     pillsEl.innerHTML = ["all", ...sorted].map(g => {
@@ -283,30 +439,49 @@
     render();
   }
 
+  function filterMatches(list) {
+    const q = document.getElementById("search").value.trim().toLowerCase();
+    return list.filter(m => {
+      if (q && !(m.home_team + " " + m.away_team).toLowerCase().includes(q)) return false;
+      if (ACTIVE_GROUP !== "all" && m.group !== ACTIVE_GROUP) return false;
+      return true;
+    });
+  }
+
   // ── Main render ────────────────────────────────────────────────────
   function render() {
-    const q = document.getElementById("search").value.trim().toLowerCase();
-    const grid = document.getElementById("grid");
-
     renderGroupPills();
 
-    const shown = MATCHES
-      .filter(m => {
-        if (q && !(m.home_team + " " + m.away_team).toLowerCase().includes(q)) return false;
-        if (ACTIVE_GROUP !== "all" && m.group !== ACTIVE_GROUP) return false;
-        return true;
-      })
-      .sort((a, b) => {
-        if (!a.commence_time) return 1;
-        if (!b.commence_time) return -1;
-        return new Date(a.commence_time) - new Date(b.commence_time);
-      });
-
-    document.getElementById("count").textContent =
-      `${shown.length} of ${MATCHES.length} matches`;
+    // Upcoming
+    const shown = filterMatches(MATCHES).sort((a, b) => {
+      if (!a.commence_time) return 1;
+      if (!b.commence_time) return -1;
+      return new Date(a.commence_time) - new Date(b.commence_time);
+    });
+    const grid = document.getElementById("grid");
     grid.innerHTML = shown.length
       ? shown.map(cardHTML).join("")
-      : `<div class="empty">No matches.</div>`;
+      : `<div class="empty">No upcoming matches.</div>`;
+
+    // Results
+    const shownCompleted = filterMatches(COMPLETED).sort((a, b) => {
+      if (!a.commence_time) return 1;
+      if (!b.commence_time) return -1;
+      return new Date(b.commence_time) - new Date(a.commence_time); // newest first
+    });
+    const resultsSection = document.getElementById("results-section");
+    const resultsGrid = document.getElementById("results-grid");
+    if (shownCompleted.length > 0) {
+      resultsSection.style.display = "";
+      resultsGrid.innerHTML = shownCompleted.map(resultCardHTML).join("");
+    } else {
+      resultsSection.style.display = "none";
+    }
+
+    const totalShown = shown.length + shownCompleted.length;
+    const totalAll = MATCHES.length + COMPLETED.length;
+    document.getElementById("count").textContent =
+      `${totalShown} of ${totalAll} matches`;
   }
 
   // ── Load ───────────────────────────────────────────────────────────
@@ -314,10 +489,25 @@
     const r = await fetch("/api/matches");
     const data = await r.json();
     MATCHES = data.matches || [];
+    COMPLETED = data.completed || [];
     updateQuota(data.odds_quota);
     document.getElementById("ts").textContent = data.updated_at
       ? "updated " + new Date(data.updated_at).toLocaleString()
       : "";
+
+    const ptsEl = document.getElementById("pts");
+    const ptsVal = document.getElementById("pts-val");
+    const totalPts = data.total_points ?? 0;
+    const ptsTotal = document.getElementById("pts-total");
+    if (COMPLETED.length > 0) {
+      ptsEl.style.display = "";
+      ptsVal.textContent = totalPts;
+      ptsTotal.textContent = `${totalPts} pt${totalPts !== 1 ? "s" : ""}`;
+    } else {
+      ptsEl.style.display = "none";
+      ptsTotal.textContent = "";
+    }
+
     render();
   }
 

@@ -360,3 +360,112 @@ def match_elevenify(home: str, away: str, fixtures: list[dict], cutoff: float = 
         "away_win": f[f"{a_pref}_win"],
         "group": f.get("group"),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Scores (completed matches)                                                   #
+# --------------------------------------------------------------------------- #
+SCORES_BASE = os.environ.get(
+    "ODDS_API_SCORES_BASE",
+    "https://api.the-odds-api.com/v4/sports/soccer_fifa_world_cup/scores",
+)
+_SCORES_CACHE = Path(__file__).parent / ".scores_cache.json"
+_SCORES_STORE = Path(__file__).parent / ".results_store.json"
+_SCORES_TTL = 20 * 60
+
+
+def _load_results_store() -> dict:
+    """Load the persistent results store (keyed by canonical team pair)."""
+    if not _SCORES_STORE.exists():
+        return {}
+    try:
+        return json.loads(_SCORES_STORE.read_text())
+    except Exception:
+        return {}
+
+
+def _save_results_store(store: dict) -> None:
+    try:
+        _SCORES_STORE.write_text(json.dumps(store))
+    except Exception as exc:
+        log.warning("Results store write failed: %s", exc)
+
+
+def fetch_scores(force: bool = False) -> list[dict]:
+    """Return all known completed WC26 scores.
+
+    Fetches recent results from The Odds API (max daysFrom=3 per API limits),
+    merges them into a persistent store so games beyond the 3-day window are
+    retained for the rest of the tournament.
+    """
+    store = _load_results_store()
+
+    if not force and _SCORES_CACHE.exists():
+        try:
+            cached = json.loads(_SCORES_CACHE.read_text())
+            age = datetime.now(timezone.utc).timestamp() - cached["fetched_at"]
+            if age < _SCORES_TTL:
+                log.info("Scores from cache (%.0f min old).", age / 60)
+                return list(store.values())
+        except Exception:
+            pass
+
+    key = os.environ.get("ODDS_API_KEY")
+    if not key:
+        log.warning("ODDS_API_KEY not set — no scores available.")
+        return list(store.values())
+
+    try:
+        r = requests.get(
+            SCORES_BASE,
+            params={"apiKey": key, "daysFrom": 3},
+            timeout=_HTTP_TIMEOUT,
+        )
+        r.raise_for_status()
+        events = r.json()
+    except Exception as exc:
+        log.error("Scores fetch failed: %s", exc)
+        return list(store.values())
+
+    new_count = 0
+    for ev in events:
+        if not ev.get("completed"):
+            continue
+        score = _normalize_score(ev)
+        k = f"{_canon(score['home_team'])}|{_canon(score['away_team'])}"
+        if k not in store:
+            new_count += 1
+        store[k] = score
+
+    _save_results_store(store)
+    try:
+        _SCORES_CACHE.write_text(json.dumps({"fetched_at": datetime.now(timezone.utc).timestamp()}))
+    except Exception:
+        pass
+    log.info("Scores: %d total known, %d newly added.", len(store), new_count)
+    return list(store.values())
+
+
+def _normalize_score(ev: dict) -> dict:
+    home, away = ev["home_team"], ev["away_team"]
+    score_map = {s["name"]: s.get("score") for s in (ev.get("scores") or [])}
+    h, a = score_map.get(home), score_map.get(away)
+    return {
+        "home_team": home,
+        "away_team": away,
+        "commence_time": ev.get("commence_time"),
+        "home_score": int(h) if h is not None else None,
+        "away_score": int(a) if a is not None else None,
+    }
+
+
+def match_score(home: str, away: str, scores: list[dict]) -> dict | None:
+    """Find the score entry for this fixture, oriented to (home, away)."""
+    ch, ca = _canon(home), _canon(away)
+    for s in scores:
+        sh, sa = _canon(s["home_team"]), _canon(s["away_team"])
+        if {ch, ca} == {sh, sa}:
+            if (ch, ca) == (sa, sh):
+                return {**s, "home_score": s["away_score"], "away_score": s["home_score"]}
+            return s
+    return None

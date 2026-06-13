@@ -5,6 +5,7 @@ Run with `python app.py` -> http://localhost:8000
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,14 +22,57 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 log = logging.getLogger("wc.app")
 
 TEMPLATES = Path(__file__).parent / "templates"
-_state: dict = {"matches": [], "updated_at": None}
+_state: dict = {"matches": [], "completed": [], "updated_at": None, "total_points": 0}
 
-def _compute(force: bool = False) -> list[dict]:
-    """Fetch both sources, run the model per fixture, cache the result."""
+_PREDICTIONS_STORE = Path(__file__).parent / ".predictions_store.json"
+
+
+def _load_store() -> dict:
+    if not _PREDICTIONS_STORE.exists():
+        return {}
+    try:
+        return json.loads(_PREDICTIONS_STORE.read_text())
+    except Exception:
+        return {}
+
+
+def _save_store(store: dict) -> None:
+    try:
+        _PREDICTIONS_STORE.write_text(json.dumps(store))
+    except Exception as exc:
+        log.warning("Predictions store write failed: %s", exc)
+
+
+def _store_key(home: str, away: str) -> str:
+    return f"{data._canon(home)}|{data._canon(away)}"
+
+
+def _actual_outcome(home_score, away_score) -> str | None:
+    if home_score is None or away_score is None:
+        return None
+    if home_score > away_score:
+        return "home"
+    if away_score > home_score:
+        return "away"
+    return "draw"
+
+
+def _points_earned(pick: str, actual: str | None) -> int | None:
+    if actual is None:
+        return None
+    if pick == actual:
+        return 2 if pick == "draw" else 1
+    return 0
+
+
+def _compute(force: bool = False) -> None:
+    """Fetch all sources, run the model per upcoming fixture, build completed list."""
     odds = data.fetch_odds(force=force)
     elevenify = data.fetch_elevenify(force=force)
-    matches: list[dict] = []
+    scores = data.fetch_scores(force=force)
+    store = _load_store()
 
+    upcoming: list[dict] = []
     for ev in odds:
         elev = (
             data.match_elevenify(ev["home_team"], ev["away_team"], elevenify)
@@ -76,7 +120,7 @@ def _compute(force: bool = False) -> list[dict]:
                     "blend_applied": pred.blend_applied,
                     "outcomes": vars(pred.outcomes),
                 }
-            except Exception as exc:  # noqa: BLE001 - one bad fixture shouldn't 500 the board
+            except Exception as exc:  # noqa: BLE001
                 log.error(
                     "Prediction failed for %s v %s: %s",
                     ev["home_team"],
@@ -84,12 +128,49 @@ def _compute(force: bool = False) -> list[dict]:
                     exc,
                 )
 
-        matches.append(match)
+        # Persist prediction so it survives after the match leaves the odds feed.
+        if match["prediction"]:
+            store[_store_key(ev["home_team"], ev["away_team"])] = {
+                "home_team": ev["home_team"],
+                "away_team": ev["away_team"],
+                "commence_time": ev["commence_time"],
+                "group": match["group"],
+                "elevenify_source": match["elevenify_source"],
+                "prediction": match["prediction"],
+            }
 
-    _state["matches"] = matches
+        upcoming.append(match)
+
+    _save_store(store)
+
+    # Build completed list: scores feed + stored predictions.
+    completed: list[dict] = []
+    for sc in scores:
+        key = _store_key(sc["home_team"], sc["away_team"])
+        stored = store.get(key)
+        prediction = stored["prediction"] if stored else None
+        actual = _actual_outcome(sc["home_score"], sc["away_score"])
+        pick = prediction["outcomes"]["optimal_pick"].lower() if prediction else None
+        completed.append({
+            "home_team": sc["home_team"],
+            "away_team": sc["away_team"],
+            "commence_time": sc.get("commence_time") or (stored.get("commence_time") if stored else None),
+            "group": stored.get("group") if stored else None,
+            "home_score": sc["home_score"],
+            "away_score": sc["away_score"],
+            "actual_outcome": actual,
+            "points_earned": _points_earned(pick, actual) if pick else None,
+            "elevenify_source": stored.get("elevenify_source") if stored else None,
+            "prediction": prediction,
+        })
+
+    _state["matches"] = upcoming
+    _state["completed"] = completed
+    _state["total_points"] = sum(
+        m["points_earned"] for m in completed if m["points_earned"] is not None
+    )
     _state["updated_at"] = data.odds_fetched_at()
-    log.info("Computed %d matches.", len(matches))
-    return matches
+    log.info("Computed %d upcoming, %d completed matches.", len(upcoming), len(completed))
 
 
 @asynccontextmanager
@@ -106,6 +187,8 @@ def api_matches():
     return {
         "updated_at": _state["updated_at"],
         "matches": _state["matches"],
+        "completed": _state["completed"],
+        "total_points": _state["total_points"],
         "odds_quota": data.odds_quota(),
     }
 
@@ -116,6 +199,8 @@ def api_refresh():
     return {
         "status": "ok",
         "matches_count": len(_state["matches"]),
+        "completed_count": len(_state["completed"]),
+        "total_points": _state["total_points"],
         "timestamp": _state["updated_at"],
         "odds_quota": data.odds_quota(),
     }
