@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -65,12 +66,31 @@ def _points_earned(pick: str, actual: str | None) -> int | None:
     return 0
 
 
-def _compute(force: bool = False) -> None:
-    """Fetch all sources, run the model per upcoming fixture, build completed list."""
-    odds = data.fetch_odds(force=force)
-    elevenify = data.fetch_elevenify(force=force)
-    scores = data.fetch_scores(force=force)
+def _compute(force_odds: bool = False, force_scores: bool = False, override: bool = False) -> None:
+    """Fetch all sources, run the model per upcoming fixture, build completed list.
+
+    force_odds and force_scores bypass their caches independently so a routine
+    refresh only spends credits on what it needs (odds ~3, scores ~2). Elevenify
+    is a free Datawrapper CDN fetch, so it refreshes alongside odds to keep the
+    blend consistent with the prices it feeds.
+    """
+    odds = data.fetch_odds(force=force_odds, override=override)
+    elevenify = data.fetch_elevenify(force=force_odds)
+    scores = data.fetch_scores(force=force_scores)
     store = _load_store()
+
+    # Keys for matches that have kicked off — predictions must not be overwritten after kickoff.
+    now = datetime.now(timezone.utc)
+    completed_keys = {
+        _store_key(sc["home_team"], sc["away_team"])
+        for sc in scores
+        if sc.get("home_score") is not None and sc.get("away_score") is not None
+    }
+    kicked_off_keys = {
+        _store_key(ev["home_team"], ev["away_team"])
+        for ev in odds
+        if datetime.fromisoformat(ev["commence_time"].replace("Z", "+00:00")) <= now
+    }
 
     upcoming: list[dict] = []
     for ev in odds:
@@ -129,8 +149,10 @@ def _compute(force: bool = False) -> None:
                 )
 
         # Persist prediction so it survives after the match leaves the odds feed.
-        if match["prediction"]:
-            store[_store_key(ev["home_team"], ev["away_team"])] = {
+        # Lock once the match has kicked off — live/in-play odds corrupt the pre-match pick.
+        key = _store_key(ev["home_team"], ev["away_team"])
+        if match["prediction"] and key not in kicked_off_keys:
+            store[key] = {
                 "home_team": ev["home_team"],
                 "away_team": ev["away_team"],
                 "commence_time": ev["commence_time"],
@@ -139,7 +161,8 @@ def _compute(force: bool = False) -> None:
                 "prediction": match["prediction"],
             }
 
-        upcoming.append(match)
+        if key not in completed_keys:
+            upcoming.append(match)
 
     _save_store(store)
 
@@ -194,10 +217,23 @@ def api_matches():
 
 
 @app.get("/api/refresh")
-def api_refresh():
-    _compute(force=True)
+def api_refresh(scope: str = "odds", override: bool = False):
+    """Scoped, credit-aware refresh.
+
+    scope=odds   -> prices + free Elevenify blend (~3 credits)   [default]
+    scope=scores -> completed-match results only (~2 credits)
+    scope=all    -> both (~5 credits)
+    override=1   -> bypass the debounce / quota-floor guards on the odds fetch.
+    """
+    _compute(
+        force_odds=scope in ("odds", "all"),
+        force_scores=scope in ("scores", "all"),
+        override=override,
+    )
     return {
         "status": "ok",
+        "scope": scope,
+        "odds_action": data.last_odds_action(),
         "matches_count": len(_state["matches"]),
         "completed_count": len(_state["completed"]),
         "total_points": _state["total_points"],

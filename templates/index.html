@@ -203,7 +203,8 @@
   <span class="pts" id="pts" style="display:none">— <span id="pts-val">0</span> pts</span>
   <div class="spacer"></div>
   <span class="quota" id="quota"></span>
-  <button class="refresh" id="refresh">↻ Refresh</button>
+  <button class="refresh" id="refresh" data-scope="odds" title="Refresh odds + blend (~3 API calls)">↻ Odds</button>
+  <button class="refresh" id="refresh-scores" data-scope="scores" title="Sync completed results (~2 API calls)">⚑ Scores</button>
 </header>
 
 <div class="filters">
@@ -511,21 +512,28 @@
     render();
   }
 
-  async function refresh() {
-    const btn = document.getElementById("refresh");
-    btn.disabled = true; btn.textContent = "↻ refreshing…";
+  async function refresh(btn) {
+    const scope = btn.dataset.scope;
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = "↻ …";
     try {
-      const r = await fetch("/api/refresh");
+      const r = await fetch(`/api/refresh?scope=${scope}`);
       const data = await r.json();
       updateQuota(data.odds_quota);
       await load();
+      // Surface a guard skip so a no-op click isn't mistaken for a refresh.
+      if (scope !== "scores" && (data.odds_action === "debounced" || data.odds_action === "quota_floor")) {
+        btn.textContent = data.odds_action === "debounced" ? "⏳ too soon" : "⛔ low quota";
+        await new Promise(res => setTimeout(res, 1500));
+      }
     } finally {
-      btn.disabled = false; btn.textContent = "↻ Refresh";
+      btn.disabled = false; btn.textContent = label;
     }
   }
 
   document.getElementById("search").addEventListener("input", render);
-  document.getElementById("refresh").addEventListener("click", refresh);
+  document.querySelectorAll("button.refresh").forEach(b =>
+    b.addEventListener("click", () => refresh(b)));
 
   load();
 </script>

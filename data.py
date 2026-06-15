@@ -34,7 +34,17 @@ _ODDS_CACHE = Path(__file__).parent / ".odds_cache.json"
 _ELEVENIFY_CACHE = Path(__file__).parent / ".elevenify_cache.json"
 _ELEVENIFY_TTL = 4 * 3600  # seconds; Elevenify updates between rounds, not continuously
 
+# Quota min-maxxing. The Odds API bills ~3 credits per odds call (3 markets x 1
+# region) and ~2 per scores call (daysFrom variant). Two guards protect a forced
+# refresh from wasting credits; both are bypassable per-call via override=True.
+#   - debounce: ignore a forced refresh if the cache is younger than this.
+#   - quota floor: refuse a forced refresh once remaining credits hit this reserve
+#     (0 disables). Stops the last credits leaking into a silent sample-data fallback.
+_ODDS_MIN_INTERVAL = int(os.environ.get("ODDS_MIN_REFRESH_SECONDS", "60"))
+_ODDS_QUOTA_FLOOR = int(os.environ.get("ODDS_QUOTA_FLOOR", "0"))
+
 _odds_quota: int | None = None
+_last_odds_action: str = "init"  # fetched | cache | debounced | quota_floor | fallback
 
 
 def _now() -> str:
@@ -56,22 +66,70 @@ def odds_quota() -> int | None:
     return _odds_quota
 
 
+def last_odds_action() -> str:
+    """Outcome of the last fetch_odds call (fetched/cache/debounced/quota_floor/fallback)."""
+    return _last_odds_action
+
+
+def _read_odds_cache() -> dict | None:
+    if not _ODDS_CACHE.exists():
+        return None
+    try:
+        return json.loads(_ODDS_CACHE.read_text())
+    except Exception:
+        return None
+
+
+def _iso_age(ts: str | None) -> float | None:
+    """Seconds since an ISO timestamp, or None if unparseable."""
+    if not ts:
+        return None
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(ts)).total_seconds()
+    except Exception:
+        return None
+
+
 # --------------------------------------------------------------------------- #
 # The Odds API                                                                #
 # --------------------------------------------------------------------------- #
-def fetch_odds(force: bool = False) -> list[dict]:
+def fetch_odds(force: bool = False, override: bool = False) -> list[dict]:
     """Return cached odds if available, otherwise fetch from The Odds API.
 
-    Pass force=True to bypass the cache and hit the API.
+    Pass force=True to bypass the cache and hit the API (~3 credits). A forced
+    fetch is still suppressed by the debounce and quota-floor guards unless
+    override=True. Inspect last_odds_action() to see what actually happened.
     """
-    if not force and _ODDS_CACHE.exists():
+    global _odds_quota, _last_odds_action
+    cached = _read_odds_cache()
+
+    if cached is not None and _odds_quota is None and cached.get("quota") is not None:
+        _odds_quota = cached["quota"]
+
+    if not force and cached is not None:
         log.info("Loading odds from cache (%s).", _ODDS_CACHE)
-        cached = json.loads(_ODDS_CACHE.read_text())
+        _last_odds_action = "cache"
         return cached["events"]
+
+    # Forced refresh: apply credit-saving guards (skippable via override).
+    if force and cached is not None and not override:
+        age = _iso_age(cached.get("fetched_at"))
+        if age is not None and age < _ODDS_MIN_INTERVAL:
+            log.info("Odds refresh debounced (%.0fs < %ds) - serving cache.", age, _ODDS_MIN_INTERVAL)
+            _last_odds_action = "debounced"
+            return cached["events"]
+        if _ODDS_QUOTA_FLOOR and _odds_quota is not None and _odds_quota <= _ODDS_QUOTA_FLOOR:
+            log.warning(
+                "Odds refresh blocked: %d credits left <= floor %d - serving cache.",
+                _odds_quota, _ODDS_QUOTA_FLOOR,
+            )
+            _last_odds_action = "quota_floor"
+            return cached["events"]
 
     key = os.environ.get("ODDS_API_KEY")
     if not key:
         log.warning("ODDS_API_KEY not set - serving sample fixtures.")
+        _last_odds_action = "fallback"
         return _sample_odds()
     # Pinnacle is the sharpest book (no-vig, limits winners); betfair_ex_eu is the
     # exchange-derived market. Both are far more efficient than soft EU retail books.
@@ -85,7 +143,6 @@ def fetch_odds(force: bool = False) -> list[dict]:
     try:
         r = requests.get(ODDS_BASE, params=params, timeout=_HTTP_TIMEOUT)
         r.raise_for_status()
-        global _odds_quota
         try:
             _odds_quota = int(r.headers["x-requests-remaining"])
         except (KeyError, ValueError):
@@ -93,13 +150,16 @@ def fetch_odds(force: bool = False) -> list[dict]:
         events = r.json()
     except Exception as exc:  # noqa: BLE001 - any failure -> graceful fallback
         log.error("Odds fetch failed (%s) - serving sample fixtures.", exc)
+        _last_odds_action = "fallback"
         return _sample_odds()
     if not events:
         log.warning("Odds API returned 0 WC events - serving sample fixtures.")
+        _last_odds_action = "fallback"
         return _sample_odds()
     log.info("Fetched %d WC events from The Odds API.", len(events))
     normalised = [_normalize_event(ev) for ev in events]
-    _ODDS_CACHE.write_text(json.dumps({"fetched_at": _now(), "events": normalised}))
+    _ODDS_CACHE.write_text(json.dumps({"fetched_at": _now(), "quota": _odds_quota, "events": normalised}))
+    _last_odds_action = "fetched"
     return normalised
 
 
@@ -398,6 +458,7 @@ def fetch_scores(force: bool = False) -> list[dict]:
     merges them into a persistent store so games beyond the 3-day window are
     retained for the rest of the tournament.
     """
+    global _odds_quota
     store = _load_results_store()
 
     if not force and _SCORES_CACHE.exists():
@@ -422,6 +483,10 @@ def fetch_scores(force: bool = False) -> list[dict]:
             timeout=_HTTP_TIMEOUT,
         )
         r.raise_for_status()
+        try:  # scores call also reports remaining credits - keep the gauge current
+            _odds_quota = int(r.headers["x-requests-remaining"])
+        except (KeyError, ValueError):
+            pass
         events = r.json()
     except Exception as exc:
         log.error("Scores fetch failed: %s", exc)
