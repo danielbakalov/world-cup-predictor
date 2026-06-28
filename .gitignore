@@ -6,3 +6,4 @@ __pycache__/
 .elevenify_cache.json
 picks.json
 .envrc
+CLAUDE.local.md
