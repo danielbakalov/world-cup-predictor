@@ -59,12 +59,6 @@
     padding: 8px 12px; border-radius: 8px; min-width: 220px; font-size: 13px;
   }
   .filters .sep { color: var(--line); }
-  .pill {
-    padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line);
-    background: var(--panel); color: var(--muted); cursor: pointer; font-size: 12px;
-  }
-  .pill:hover { border-color: var(--muted); color: var(--text); }
-  .pill.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
   .filters .count { color: var(--muted); font-size: 12px; margin-left: 4px; }
 
   /* Grid */
@@ -73,6 +67,13 @@
     gap: 14px; padding: 20px 24px; max-width: 1100px; margin: 0 auto;
   }
   @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+  .day-header {
+    grid-column: 1 / -1; margin: 6px 0 0; padding-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted); font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .day-header:first-child { margin-top: 0; }
 
   /* Card */
   .card {
@@ -90,6 +91,7 @@
   }
   .badge.blend { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
   .badge.odds { background: var(--panel-2); color: var(--muted); border-color: var(--grey); }
+  .badge.round { background: var(--gold-dim); color: var(--gold); border-color: var(--gold); margin-top: 0; }
 
   /* Model pick badge */
   .pick-row { margin: 12px 0 10px; display: flex; align-items: center; gap: 8px; }
@@ -210,7 +212,6 @@
 <div class="filters">
   <input type="search" id="search" placeholder="Filter by team…" autocomplete="off" />
   <span class="sep">|</span>
-  <div id="group-pills" style="display:flex;gap:6px;flex-wrap:wrap"></div>
   <span class="count" id="count"></span>
 </div>
 
@@ -227,7 +228,6 @@
 <script>
   let MATCHES = [];
   let COMPLETED = [];
-  let ACTIVE_GROUP = "all";
 
   const fmtKO = (iso) => {
     if (!iso) return "TBD";
@@ -237,6 +237,18 @@
         hour: "2-digit", minute: "2-digit"
       });
     } catch { return iso; }
+  };
+
+  const ROUND_LABELS = {
+    group: "Group Stage", r32: "Round of 32", r16: "Round of 16",
+    qf: "Quarter-Final", sf: "Semi-Final", third: "Third Place", final: "Final",
+  };
+  const ROUND_WIN_PTS = { group: 1, r32: 2, r16: 2, qf: 3, sf: 5, third: 5, final: 10 };
+  const roundBadge = (r) => {
+    if (!r || !ROUND_LABELS[r]) return "";
+    const pts = ROUND_WIN_PTS[r];
+    const sub = r === "group" ? "1 pt win · 2 draw" : `${pts} pt${pts !== 1 ? "s" : ""} win`;
+    return `<span class="badge round">${ROUND_LABELS[r]} · ${sub}</span>`;
   };
 
   const outClass = (o) => o === "Home Win" || o === "Away Win" ? "win" : "draw";
@@ -260,7 +272,7 @@
       { key: "home", label: "Home", pct: o.home },
       { key: "draw", label: "Draw", pct: o.draw },
       { key: "away", label: "Away", pct: o.away },
-    ].map(r => {
+    ].filter(r => !(pred.knockout && r.key === "draw")).map(r => {
       const isOpt = r.key === optLow;
       return `
         <div class="oc-row ${r.key}-r${isOpt ? " optimal" : ""}">
@@ -320,6 +332,7 @@
           <span class="teams">${esc(m.home_team)} <span style="color:var(--muted)">vs</span> ${esc(m.away_team)}</span>
           <span class="ko">${fmtKO(m.commence_time)}</span>
         </div>
+        ${roundBadge(m.round)}
         ${badge}
         ${body}
         <details class="expand">
@@ -339,11 +352,17 @@
         <span class="team-name">${esc(m.away_team)}</span>
       </div>`;
 
-    // Points chip
-    let chipHTML = `<span class="pts-chip grey">—</span>`;
-    if (m.points_earned === 2) chipHTML = `<span class="pts-chip gold">+2</span>`;
-    else if (m.points_earned === 1) chipHTML = `<span class="pts-chip green">+1</span>`;
-    else if (m.points_earned === 0) chipHTML = `<span class="pts-chip red">✗</span>`;
+    // Points chip — round-aware (group win 1 / draw 2; knockout 2/3/5/10).
+    const pe = m.points_earned;
+    const hasResult = m.home_score !== null && m.away_score !== null;
+    // A knockout tie (penalties) scores null until a winner is recorded manually.
+    const pending = pe === null && hasResult && m.round !== "group";
+    let chipHTML = pending
+      ? `<span class="pts-chip grey">pending</span>`
+      : `<span class="pts-chip grey">—</span>`;
+    if (pe === 0) chipHTML = `<span class="pts-chip red">✗</span>`;
+    else if (pe === 1) chipHTML = `<span class="pts-chip green">+1</span>`;
+    else if (pe >= 2) chipHTML = `<span class="pts-chip gold">+${pe}</span>`;
 
     // Pick + actual outcome row
     let pickActualHTML = "";
@@ -354,14 +373,15 @@
         : optLow === "away" ? esc(m.away_team)
         : "Draw";
 
-      const actualLabel = m.actual_outcome === "home" ? esc(m.home_team) + " Win"
+      const actualLabel = pending ? "Level — record winner in .results_store.json"
+        : m.actual_outcome === "home" ? esc(m.home_team) + " Win"
         : m.actual_outcome === "away" ? esc(m.away_team) + " Win"
         : m.actual_outcome === "draw" ? "Draw"
         : "—";
 
-      const correct = m.points_earned !== null && m.points_earned > 0;
-      const outcomeClass = m.points_earned === null ? "" : correct ? "correct" : "wrong";
-      const mark = m.points_earned === null ? "" : correct ? " ✓" : " ✗";
+      const correct = pe !== null && pe > 0;
+      const outcomeClass = pe === null ? "" : correct ? "correct" : "wrong";
+      const mark = pe === null ? "" : correct ? " ✓" : " ✗";
 
       pickActualHTML = `
         <div class="pick-row">
@@ -386,7 +406,7 @@
         { key: "home", label: "Home", pct: o.home },
         { key: "draw", label: "Draw", pct: o.draw },
         { key: "away", label: "Away", pct: o.away },
-      ].map(r => `
+      ].filter(r => !(pred.knockout && r.key === "draw")).map(r => `
         <div class="oc-row ${r.key}-r${r.key === optLow ? " optimal" : ""}">
           <span class="ol">${r.label}</span>
           <span class="bar"><span style="width:${(r.pct / maxPct * 100).toFixed(1)}%"></span></span>
@@ -417,52 +437,51 @@
           <span class="teams">${esc(m.home_team)} <span style="color:var(--muted)">vs</span> ${esc(m.away_team)}</span>
           <span class="ko">${fmtKO(m.commence_time)}</span>
         </div>
+        ${roundBadge(m.round)}
         ${scoreHTML}
         ${pickActualHTML}
         ${modelDetail}
       </div>`;
   }
 
-  // ── Group pills ────────────────────────────────────────────────────
-  function renderGroupPills() {
-    const groups = new Set();
-    [...MATCHES, ...COMPLETED].forEach(m => { if (m.group) groups.add(m.group); });
-    const sorted = Array.from(groups).sort();
-    const pillsEl = document.getElementById("group-pills");
-    pillsEl.innerHTML = ["all", ...sorted].map(g => {
-      const label = g === "all" ? "All" : g;
-      return `<button class="pill${ACTIVE_GROUP === g ? " active" : ""}" onclick='setGroup(${JSON.stringify(g)})'>${esc(label)}</button>`;
-    }).join("");
-  }
-
-  function setGroup(g) {
-    ACTIVE_GROUP = g;
-    render();
-  }
-
   function filterMatches(list) {
     const q = document.getElementById("search").value.trim().toLowerCase();
     return list.filter(m => {
       if (q && !(m.home_team + " " + m.away_team).toLowerCase().includes(q)) return false;
-      if (ACTIVE_GROUP !== "all" && m.group !== ACTIVE_GROUP) return false;
       return true;
     });
   }
 
+  const dayLabel = (iso) => {
+    if (!iso) return "Date TBD";
+    try {
+      return new Date(iso).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    } catch { return "Date TBD"; }
+  };
+
   // ── Main render ────────────────────────────────────────────────────
   function render() {
-    renderGroupPills();
-
-    // Upcoming
+    // Upcoming — chronological, split under a header per kickoff day.
     const shown = filterMatches(MATCHES).sort((a, b) => {
       if (!a.commence_time) return 1;
       if (!b.commence_time) return -1;
       return new Date(a.commence_time) - new Date(b.commence_time);
     });
     const grid = document.getElementById("grid");
-    grid.innerHTML = shown.length
-      ? shown.map(cardHTML).join("")
-      : `<div class="empty">No upcoming matches.</div>`;
+    if (shown.length) {
+      let html = "", lastDay = null;
+      for (const m of shown) {
+        const day = dayLabel(m.commence_time);
+        if (day !== lastDay) {
+          html += `<div class="day-header">${esc(day)}</div>`;
+          lastDay = day;
+        }
+        html += cardHTML(m);
+      }
+      grid.innerHTML = html;
+    } else {
+      grid.innerHTML = `<div class="empty">No upcoming matches.</div>`;
+    }
 
     // Results
     const shownCompleted = filterMatches(COMPLETED).sort((a, b) => {

@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse
 
 import data
 import model
+import scoring
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -58,12 +59,8 @@ def _actual_outcome(home_score, away_score) -> str | None:
     return "draw"
 
 
-def _points_earned(pick: str, actual: str | None) -> int | None:
-    if actual is None:
-        return None
-    if pick == actual:
-        return 2 if pick == "draw" else 1
-    return 0
+# Scoring is round-aware (see scoring.py): group win 1 / draw 2; knockout wins
+# scale R32/R16 2, QF 3, SF 5, Final 10. Penalty ties await a manual winner.
 
 
 def _compute(force_odds: bool = False, force_scores: bool = False, override: bool = False) -> None:
@@ -99,11 +96,13 @@ def _compute(force_odds: bool = False, force_scores: bool = False, override: boo
             if elevenify
             else None
         )
+        rnd = scoring.round_of(ev["commence_time"])
         match = {
             "home_team": ev["home_team"],
             "away_team": ev["away_team"],
             "commence_time": ev["commence_time"],
             "group": elev.get("group") if elev else None,
+            "round": rnd,
             "odds_source": {
                 "h2h": ev["h2h"],
                 "totals": ev["totals"],
@@ -132,12 +131,15 @@ def _compute(force_odds: bool = False, force_scores: bool = False, override: boo
                     totals=ev["totals"],
                     handicap=ev["asian_handicap"]["line"] if ev["asian_handicap"] else None,
                     elevenify=elev,
+                    knockout=model.KNOCKOUT_STAGE,
+                    win_points=scoring.win_points(rnd),
                 )
                 match["prediction"] = {
                     "top_scorelines": [vars(s) for s in pred.top_scorelines],
                     "lambda_home": pred.lambda_home,
                     "lambda_away": pred.lambda_away,
                     "blend_applied": pred.blend_applied,
+                    "knockout": pred.knockout,
                     "outcomes": vars(pred.outcomes),
                 }
             except Exception as exc:  # noqa: BLE001
@@ -157,6 +159,7 @@ def _compute(force_odds: bool = False, force_scores: bool = False, override: boo
                 "away_team": ev["away_team"],
                 "commence_time": ev["commence_time"],
                 "group": match["group"],
+                "round": rnd,
                 "elevenify_source": match["elevenify_source"],
                 "prediction": match["prediction"],
             }
@@ -172,17 +175,24 @@ def _compute(force_odds: bool = False, force_scores: bool = False, override: boo
         key = _store_key(sc["home_team"], sc["away_team"])
         stored = store.get(key)
         prediction = stored["prediction"] if stored else None
+        commence_time = sc.get("commence_time") or (stored.get("commence_time") if stored else None)
+        rnd = scoring.round_of(commence_time)
         actual = _actual_outcome(sc["home_score"], sc["away_score"])
         pick = prediction["outcomes"]["optimal_pick"].lower() if prediction else None
+        winner = sc.get("winner")  # manual override for penalty-decided ties
+        points = scoring.points_earned(rnd, pick, actual, winner) if pick else None
+        # A penalty-decided knockout shows the advancing side once recorded.
+        display_actual = winner if (rnd != "group" and actual == "draw" and winner) else actual
         completed.append({
             "home_team": sc["home_team"],
             "away_team": sc["away_team"],
-            "commence_time": sc.get("commence_time") or (stored.get("commence_time") if stored else None),
+            "commence_time": commence_time,
             "group": stored.get("group") if stored else None,
+            "round": rnd,
             "home_score": sc["home_score"],
             "away_score": sc["away_score"],
-            "actual_outcome": actual,
-            "points_earned": _points_earned(pick, actual) if pick else None,
+            "actual_outcome": display_actual,
+            "points_earned": points,
             "elevenify_source": stored.get("elevenify_source") if stored else None,
             "prediction": prediction,
         })

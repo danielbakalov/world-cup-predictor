@@ -14,10 +14,16 @@ Per fixture:
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 
 from scipy.optimize import brentq
 from scipy.stats import poisson, skellam
+
+# Knockout stage: draws resolve to one team via ET/penalties, so "Draw" is never
+# a valid pick. When set, the draw probability is redistributed into the two
+# teams' "to advance" probabilities. Group stage is fully finished for WC26.
+KNOCKOUT_STAGE = os.environ.get("WC_KNOCKOUT", "1") == "1"
 
 MAX_GOALS = 8
 LAMBDA_FLOOR = 0.15
@@ -103,6 +109,7 @@ class Prediction:
     lambda_home: float
     lambda_away: float
     blend_applied: bool
+    knockout: bool  # draw redistributed into to-advance probs; pick is a team
     top_scorelines: list[Scoreline]
     outcomes: OutcomeProbs
 
@@ -171,11 +178,31 @@ def poisson_grid(
     return [[c / total for c in row] for row in grid]
 
 
-def _outcome_probs(grid: list[list[float]]) -> OutcomeProbs:
+def _outcome_probs(
+    grid: list[list[float]], knockout: bool = False, win_points: int = 1
+) -> OutcomeProbs:
     n = len(grid)
     p_home = float(sum(grid[i][j] for i in range(n) for j in range(n) if i > j))
     p_draw = float(sum(grid[i][i] for i in range(n)))
     p_away = float(sum(grid[i][j] for i in range(n) for j in range(n) if j > i))
+
+    if knockout:
+        # The tie resolves to one team; fold the draw mass into each side in
+        # proportion to its regulation win prob (keeps the favorite favored).
+        denom = max(p_home + p_away, 1e-9)
+        home_adv = p_home + p_draw * p_home / denom
+        away_adv = p_away + p_draw * p_away / denom
+        pick = "Home" if home_adv >= away_adv else "Away"
+        # Both sides advancing are worth the same round points, so the pick is
+        # the favorite; expected points scale that prob by the round's value.
+        return OutcomeProbs(
+            home=round(home_adv * 100, 1),
+            draw=0.0,
+            away=round(away_adv * 100, 1),
+            optimal_pick=pick,
+            expected_points=round(win_points * max(home_adv, away_adv), 3),
+        )
+
     choices = {"Home": p_home, "Draw": 2.0 * p_draw, "Away": p_away}
     pick = max(choices, key=choices.get)
     return OutcomeProbs(
@@ -204,13 +231,17 @@ def predict(
     totals: dict,
     handicap: float | None = None,
     elevenify: dict | None = None,
+    knockout: bool = False,
+    win_points: int = 1,
 ) -> Prediction:
     """Full per-fixture prediction.
 
-    ml:        {"home", "draw", "away"} decimal odds
-    totals:    {"over", "under", "line"}
-    handicap:  home handicap point, or None to split via 1X2 supremacy
-    elevenify: {"home_goals", "away_goals", "home_cs", "away_cs"} or None
+    ml:         {"home", "draw", "away"} decimal odds
+    totals:     {"over", "under", "line"}
+    handicap:   home handicap point, or None to split via 1X2 supremacy
+    elevenify:  {"home_goals", "away_goals", "home_cs", "away_cs"} or None
+    knockout:   redistribute draw into to-advance probs; pick a team, not Draw
+    win_points: pool points for a correct pick this round (scales knockout exp pts)
     """
     total_mean = total_mean_from_ou(totals["over"], totals["under"], totals["line"])
     p_home, _, _ = devig_1x2(ml["home"], ml["draw"], ml["away"])
@@ -233,6 +264,7 @@ def predict(
         lambda_home=round(lam_home, 3),
         lambda_away=round(lam_away, 3),
         blend_applied=blend_applied,
+        knockout=knockout,
         top_scorelines=top_scorelines(grid),
-        outcomes=_outcome_probs(grid),
+        outcomes=_outcome_probs(grid, knockout=knockout, win_points=win_points),
     )

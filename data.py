@@ -14,6 +14,7 @@ import io
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,8 +27,11 @@ ODDS_BASE = os.environ.get(
     "ODDS_API_BASE",
     "https://api.the-odds-api.com/v4/sports/soccer_fifa_world_cup/odds",
 )
-ELEVENIFY_MATCH_CSV = "https://static.dwcdn.net/data/8CjZ3.csv"
-ELEVENIFY_TEAM_CSV = "https://static.dwcdn.net/data/wvG0g.csv"
+# Elevenify republishes this same Datawrapper chart each round. The unversioned
+# static CSV (static.dwcdn.net/data/<id>.csv) freezes on an old version, so we
+# resolve the latest published version from the embed and fetch its dataset.
+ELEVENIFY_CHART_ID = "8CjZ3"
+ELEVENIFY_EMBED = f"https://datawrapper.dwcdn.net/{ELEVENIFY_CHART_ID}/"
 
 _HTTP_TIMEOUT = 20
 _ODDS_CACHE = Path(__file__).parent / ".odds_cache.json"
@@ -251,6 +255,27 @@ def _num(s: str | None) -> float | None:
         return None
 
 
+def _elevenify_dataset_url() -> str:
+    """Resolve the dataset URL for the latest published version of the chart.
+
+    The embed page references the current version as ``<id>/<n>/``; we take the
+    highest n and fetch its version-pinned dataset. Falls back to the (possibly
+    stale) static CSV if version discovery fails — never hard-fails.
+    """
+    fallback = f"https://static.dwcdn.net/data/{ELEVENIFY_CHART_ID}.csv"
+    try:
+        r = requests.get(ELEVENIFY_EMBED, timeout=_HTTP_TIMEOUT)
+        r.raise_for_status()
+        versions = [int(v) for v in re.findall(rf"{ELEVENIFY_CHART_ID}/(\d+)/", r.text)]
+        if not versions:
+            log.warning("Elevenify version not found in embed; using static CSV.")
+            return fallback
+        return f"https://datawrapper.dwcdn.net/{ELEVENIFY_CHART_ID}/{max(versions)}/dataset.csv"
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Elevenify version lookup failed (%s); using static CSV.", exc)
+        return fallback
+
+
 def fetch_elevenify(force: bool = False) -> list[dict]:
     """Parse the Elevenify match CSV into per-fixture predictions.
 
@@ -267,7 +292,7 @@ def fetch_elevenify(force: bool = False) -> list[dict]:
             pass
 
     try:
-        r = requests.get(ELEVENIFY_MATCH_CSV, timeout=_HTTP_TIMEOUT)
+        r = requests.get(_elevenify_dataset_url(), timeout=_HTTP_TIMEOUT)
         r.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         log.error("Elevenify CSV fetch failed: %s", exc)
@@ -500,7 +525,9 @@ def fetch_scores(force: bool = False) -> list[dict]:
         k = f"{_canon(score['home_team'])}|{_canon(score['away_team'])}"
         if k not in store:
             new_count += 1
-        store[k] = score
+        # Merge so manual annotations (e.g. a "winner" override for a penalty
+        # tie) survive a fresh API fetch while the score fields stay current.
+        store[k] = {**store.get(k, {}), **score}
 
     _save_results_store(store)
     try:
