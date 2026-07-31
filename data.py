@@ -16,6 +16,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import requests
@@ -27,9 +28,13 @@ ODDS_BASE = os.environ.get(
     "ODDS_API_BASE",
     "https://api.the-odds-api.com/v4/sports/soccer_fifa_world_cup/odds",
 )
-# Elevenify republishes this same Datawrapper chart each round. The unversioned
-# static CSV (static.dwcdn.net/data/<id>.csv) freezes on an old version, so we
-# resolve the latest published version from the embed and fetch its dataset.
+# Elevenify updates this same Datawrapper chart each round, but by two different
+# mechanisms: sometimes it publishes a NEW version (group->R32) so the freshest
+# data is the highest-versioned dataset.csv; other times it edits the data IN
+# PLACE (R32->R16) so only the unversioned static CSV (static.dwcdn.net/data/
+# <id>.csv) advances and the published dataset.csv freezes. Neither source is
+# reliably freshest, so we fetch both and pick by Last-Modified (see
+# _fetch_freshest_elevenify_csv).
 ELEVENIFY_CHART_ID = "8CjZ3"
 ELEVENIFY_EMBED = f"https://datawrapper.dwcdn.net/{ELEVENIFY_CHART_ID}/"
 
@@ -255,25 +260,67 @@ def _num(s: str | None) -> float | None:
         return None
 
 
-def _elevenify_dataset_url() -> str:
-    """Resolve the dataset URL for the latest published version of the chart.
+def _elevenify_candidate_urls() -> list[str]:
+    """Candidate CSV URLs for the current chart, freshness NOT assumed by order.
 
-    The embed page references the current version as ``<id>/<n>/``; we take the
-    highest n and fetch its version-pinned dataset. Falls back to the (possibly
-    stale) static CSV if version discovery fails — never hard-fails.
+    Returns both the version-pinned dataset (resolved from the embed's highest
+    ``<id>/<n>/``) and the unversioned static CSV. Either can be the freshest
+    depending on how Elevenify updated the chart this round, so the caller
+    compares Last-Modified rather than trusting one source. Version discovery
+    failing just drops that candidate — the static CSV remains — so this never
+    hard-fails.
     """
-    fallback = f"https://static.dwcdn.net/data/{ELEVENIFY_CHART_ID}.csv"
+    static = f"https://static.dwcdn.net/data/{ELEVENIFY_CHART_ID}.csv"
+    urls: list[str] = []
     try:
         r = requests.get(ELEVENIFY_EMBED, timeout=_HTTP_TIMEOUT)
         r.raise_for_status()
         versions = [int(v) for v in re.findall(rf"{ELEVENIFY_CHART_ID}/(\d+)/", r.text)]
-        if not versions:
-            log.warning("Elevenify version not found in embed; using static CSV.")
-            return fallback
-        return f"https://datawrapper.dwcdn.net/{ELEVENIFY_CHART_ID}/{max(versions)}/dataset.csv"
+        if versions:
+            urls.append(
+                f"https://datawrapper.dwcdn.net/{ELEVENIFY_CHART_ID}/{max(versions)}/dataset.csv"
+            )
+        else:
+            log.warning("Elevenify version not found in embed; relying on static CSV.")
     except Exception as exc:  # noqa: BLE001
-        log.warning("Elevenify version lookup failed (%s); using static CSV.", exc)
-        return fallback
+        log.warning("Elevenify version lookup failed (%s); relying on static CSV.", exc)
+    urls.append(static)
+    return urls
+
+
+def _fetch_freshest_elevenify_csv() -> str | None:
+    """Fetch every candidate CSV and return the body with the newest Last-Modified.
+
+    Elevenify sometimes publishes a new chart version (versioned dataset.csv is
+    newest) and sometimes edits the data in place (only the static CSV advances),
+    so we can't hard-code either source. A candidate with no parseable
+    Last-Modified never displaces one that has a newer stamp; if none carry a
+    stamp we keep the first that loaded (version-pinned before static). Returns
+    None only if every candidate failed to fetch.
+    """
+    best: tuple[datetime | None, str, str] | None = None  # (modified, text, url)
+    for url in _elevenify_candidate_urls():
+        try:
+            r = requests.get(url, timeout=_HTTP_TIMEOUT)
+            r.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Elevenify source unavailable (%s): %s", url, exc)
+            continue
+        r.encoding = "utf-8"  # CDN omits charset; requests else guesses Latin-1 -> mojibake
+        try:
+            lm = r.headers.get("last-modified")
+            modified = parsedate_to_datetime(lm) if lm else None
+        except (TypeError, ValueError):
+            modified = None
+        if best is None or (
+            modified is not None and (best[0] is None or modified > best[0])
+        ):
+            best = (modified, r.text, url)
+
+    if best is None:
+        return None
+    log.info("Elevenify using %s (Last-Modified %s).", best[2], best[0])
+    return best[1]
 
 
 def fetch_elevenify(force: bool = False) -> list[dict]:
@@ -291,15 +338,12 @@ def fetch_elevenify(force: bool = False) -> list[dict]:
         except Exception:
             pass
 
-    try:
-        r = requests.get(_elevenify_dataset_url(), timeout=_HTTP_TIMEOUT)
-        r.raise_for_status()
-    except Exception as exc:  # noqa: BLE001
-        log.error("Elevenify CSV fetch failed: %s", exc)
+    text = _fetch_freshest_elevenify_csv()
+    if text is None:
+        log.error("Elevenify CSV fetch failed from all sources.")
         return []
 
-    r.encoding = "utf-8"  # CDN omits charset; requests else guesses Latin-1 -> mojibake
-    rows = list(csv.reader(io.StringIO(r.text)))
+    rows = list(csv.reader(io.StringIO(text)))
     if not rows:
         return []
     header = [c.strip().lower() for c in rows[0]]

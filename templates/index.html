@@ -243,7 +243,7 @@
     group: "Group Stage", r32: "Round of 32", r16: "Round of 16",
     qf: "Quarter-Final", sf: "Semi-Final", third: "Third Place", final: "Final",
   };
-  const ROUND_WIN_PTS = { group: 1, r32: 2, r16: 2, qf: 3, sf: 5, third: 5, final: 10 };
+  const ROUND_WIN_PTS = { group: 1, r32: 2, r16: 2, qf: 3, sf: 5, third: 1, final: 10 };
   const roundBadge = (r) => {
     if (!r || !ROUND_LABELS[r]) return "";
     const pts = ROUND_WIN_PTS[r];

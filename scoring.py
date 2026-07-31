@@ -6,7 +6,7 @@ Pool points for a correct pick, by round:
   Round of 16:   Win 2
   Quarter-Final: Win 3
   Semi-Final:    Win 5
-  Third Place:   Win 5   (not in the official list; mirrors the Semi-Final tier)
+  Third Place:   Win 1
   Final:         Win 10
 
 Knockout ties decided on penalties read as a level score from the feed, so the
@@ -32,7 +32,7 @@ _ROUND_STARTS: list[tuple[str, date]] = [
     ("final", date(2026, 7, 19)),
 ]
 
-WIN_POINTS = {"group": 1, "r32": 2, "r16": 2, "qf": 3, "sf": 5, "third": 5, "final": 10}
+WIN_POINTS = {"group": 1, "r32": 2, "r16": 2, "qf": 3, "sf": 5, "third": 1, "final": 10}
 DRAW_POINTS = 2  # group stage only
 _LABELS = {
     "group": "Group Stage",
