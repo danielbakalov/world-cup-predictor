@@ -2,8 +2,18 @@
 .env
 __pycache__/
 *.pyc
+.envrc
+picks.json
+
+# Caches — regenerated on every run, no reason to track.
 .odds_cache.json
 .elevenify_cache.json
-picks.json
-.envrc
+.scores_cache.json
+
+# Local working notes.
+CLAUDE.md
 CLAUDE.local.md
+
+# NOT ignored: .predictions_store.json / .results_store.json.
+# Those accumulate the tournament's picks and results permanently — The Odds
+# API only serves a 3-day window, so they cannot be rebuilt once it closes.

@@ -450,20 +450,23 @@ def match_elevenify(home: str, away: str, fixtures: list[dict], cutoff: float = 
     home team, or None (logging the pairing so an alias can be added).
     """
     ch, ca = _canon(home), _canon(away)
+
+    def oriented(f: dict, swapped: bool) -> dict:
+        h_pref, a_pref = ("away", "home") if swapped else ("home", "away")
+        return {
+            "home_goals": f[f"{h_pref}_goals"],
+            "away_goals": f[f"{a_pref}_goals"],
+            "home_cs": f[f"{h_pref}_cs"],
+            "away_cs": f[f"{a_pref}_cs"],
+            "home_win": f[f"{h_pref}_win"],
+            "away_win": f[f"{a_pref}_win"],
+            "group": f.get("group"),
+        }
+
     for f in fixtures:
         cfh, cfa = _canon(f["home_team"]), _canon(f["away_team"])
         if {ch, ca} == {cfh, cfa}:
-            swapped = (ch, ca) == (cfa, cfh) and ch != ca
-            h_pref, a_pref = ("away", "home") if swapped else ("home", "away")
-            return {
-                "home_goals": f[f"{h_pref}_goals"],
-                "away_goals": f[f"{a_pref}_goals"],
-                "home_cs": f[f"{h_pref}_cs"],
-                "away_cs": f[f"{a_pref}_cs"],
-                "home_win": f[f"{h_pref}_win"],
-                "away_win": f[f"{a_pref}_win"],
-                "group": f.get("group"),
-            }
+            return oriented(f, swapped=(ch, ca) == (cfa, cfh) and ch != ca)
 
     best: tuple[float, bool, dict] | None = None
     for f in fixtures:
@@ -479,16 +482,7 @@ def match_elevenify(home: str, away: str, fixtures: list[dict], cutoff: float = 
         return None
 
     _, swapped, f = best
-    h_pref, a_pref = ("away", "home") if swapped else ("home", "away")
-    return {
-        "home_goals": f[f"{h_pref}_goals"],
-        "away_goals": f[f"{a_pref}_goals"],
-        "home_cs": f[f"{h_pref}_cs"],
-        "away_cs": f[f"{a_pref}_cs"],
-        "home_win": f[f"{h_pref}_win"],
-        "away_win": f[f"{a_pref}_win"],
-        "group": f.get("group"),
-    }
+    return oriented(f, swapped)
 
 
 # --------------------------------------------------------------------------- #
@@ -593,15 +587,3 @@ def _normalize_score(ev: dict) -> dict:
         "home_score": int(h) if h is not None else None,
         "away_score": int(a) if a is not None else None,
     }
-
-
-def match_score(home: str, away: str, scores: list[dict]) -> dict | None:
-    """Find the score entry for this fixture, oriented to (home, away)."""
-    ch, ca = _canon(home), _canon(away)
-    for s in scores:
-        sh, sa = _canon(s["home_team"]), _canon(s["away_team"])
-        if {ch, ca} == {sh, sa}:
-            if (ch, ca) == (sa, sh):
-                return {**s, "home_score": s["away_score"], "away_score": s["home_score"]}
-            return s
-    return None
