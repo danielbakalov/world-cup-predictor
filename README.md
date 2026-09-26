@@ -24,7 +24,7 @@ Ran for all 104 matches of WC26. Final record:
 | Final | 1 | 1 (100%) | 10 |
 | **Total** | **104** | **68 (65%)** | **115** |
 
-Good enough to finish **tied for second** in the pool. It went 0-for-3 across
+Good enough to finish **tied for second out of 50** in the pool. It went 0-for-3 across
 both semi-finals and the third-place match, which is the honest caveat on a
 65% hit rate — the sample is small and the tail is fat.
 
